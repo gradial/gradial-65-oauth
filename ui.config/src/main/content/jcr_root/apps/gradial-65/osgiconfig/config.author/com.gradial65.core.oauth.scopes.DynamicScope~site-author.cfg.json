@@ -1,0 +1,5 @@
+{
+    "scopeName": "site_author",
+    "resourcePath": "/content",
+    "requiredPrivileges": ["jcr:read", "rep:write", "jcr:lockManagement", "jcr:versionManagement"]
+}

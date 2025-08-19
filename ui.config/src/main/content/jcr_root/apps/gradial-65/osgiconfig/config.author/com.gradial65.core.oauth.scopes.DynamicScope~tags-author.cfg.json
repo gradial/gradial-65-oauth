@@ -1,0 +1,5 @@
+{
+    "scopeName": "tags_author",
+    "resourcePath": "/content/cq:tags",
+    "requiredPrivileges": ["jcr:read", "rep:write", "jcr:versionManagement", "crx:replicate"]
+}

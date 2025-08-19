@@ -1,0 +1,5 @@
+{
+    "scopeName": "publish_assets",
+    "resourcePath": "/content/dam",
+    "requiredPrivileges": ["jcr:read", "jcr:addChildNodes", "crx:replicate"]
+}

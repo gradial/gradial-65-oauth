@@ -1,0 +1,5 @@
+{
+    "scopeName": "launch_author",
+    "resourcePath": "/content/launches",
+    "requiredPrivileges": ["jcr:read", "rep:write", "jcr:lockManagement", "jcr:versionManagement"]
+}

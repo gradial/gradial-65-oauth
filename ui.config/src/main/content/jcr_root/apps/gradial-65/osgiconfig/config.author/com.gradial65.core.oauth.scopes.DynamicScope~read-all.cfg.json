@@ -1,0 +1,5 @@
+{
+    "scopeName": "read_all",
+    "resourcePath": "/",
+    "requiredPrivileges": ["jcr:read"]
+}

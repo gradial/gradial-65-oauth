@@ -1,0 +1,5 @@
+{
+    "scopeName": "upload_assets",
+    "resourcePath": "/content/dam",
+    "requiredPrivileges": ["jcr:read", "rep:write", "jcr:lockManagement", "jcr:versionManagement"]
+}

@@ -1,0 +1,5 @@
+{
+    "scopeName": "site_xf_author",
+    "resourcePath": "/content/experience-fragments",
+    "requiredPrivileges": ["jcr:read", "rep:write", "jcr:lockManagement", "jcr:versionManagement"]
+}
