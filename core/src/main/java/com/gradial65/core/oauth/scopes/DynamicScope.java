@@ -50,9 +50,9 @@ public class DynamicScope implements ScopeWithPrivileges {
     @Modified
     protected void activate(DynamicOAuthScopeConfiguration config) {
         this.config = config;
-        LOGGER.error("Activated dynamic OAuth scope: {}", config.scopeName());
-        LOGGER.error("Resource path: {}", config.resourcePath());
-        LOGGER.error("Required privileges: {}", Arrays.toString(config.requiredPrivileges()));
+        LOGGER.info("Activated dynamic OAuth scope: {}", config.scopeName());
+        LOGGER.info("Resource path: {}", config.resourcePath());
+        LOGGER.info("Required privileges: {}", Arrays.toString(config.requiredPrivileges()));
     }
 
     @Override
