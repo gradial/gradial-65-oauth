@@ -271,7 +271,7 @@ async function runTests() {
     const testPaths = [
       '/content.json',
       '/content/dam.json',
-      '/content/gradial-65.json'
+      '/content/gradial.json'
     ];
 
     for (const path of testPaths) {

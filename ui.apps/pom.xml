@@ -21,8 +21,8 @@
     <!-- P A R E N T  P R O J E C T  D E S C R I P T I O N                      -->
     <!-- ====================================================================== -->
     <parent>
-        <groupId>com.gradial65</groupId>
-        <artifactId>gradial-65</artifactId>
+        <groupId>com.gradial</groupId>
+        <artifactId>gradial-oauth</artifactId>
         <version>1.1.0-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
@@ -30,7 +30,7 @@
     <!-- ====================================================================== -->
     <!-- P R O J E C T  D E S C R I P T I O N                                   -->
     <!-- ====================================================================== -->
-    <artifactId>gradial-65.ui.apps</artifactId>
+    <artifactId>gradial.ui.apps</artifactId>
     <packaging>content-package</packaging>
     <name>Gradial (6.5) - UI apps</name>
     <description>UI apps package for Gradial (6.5)</description>
@@ -51,15 +51,9 @@
                     <properties>
                         <cloudManagerTarget>none</cloudManagerTarget>
                     </properties>
-                    <group>com.gradial65</group>
-                    <name>gradial-65.ui.apps</name>
+                    <group>com.gradial</group>
+                    <name>gradial.ui.apps</name>
                     <packageType>application</packageType>
-                    <repositoryStructurePackages>
-                        <repositoryStructurePackage>
-                            <groupId>com.gradial65</groupId>
-                            <artifactId>gradial-65.ui.apps.structure</artifactId>
-                        </repositoryStructurePackage>
-                    </repositoryStructurePackages>
                     <dependencies>
                         <dependency>
                             <groupId>com.adobe.cq</groupId>
@@ -115,18 +109,9 @@
     <!-- ====================================================================== -->
     <dependencies>
         <dependency>
-            <groupId>com.gradial65</groupId>
-            <artifactId>gradial-65.core</artifactId>
+            <groupId>com.gradial</groupId>
+            <artifactId>gradial.core</artifactId>
             <version>${project.version}</version>
-        </dependency>
-
-
-
-        <dependency>
-            <groupId>com.gradial65</groupId>
-            <artifactId>gradial-65.ui.apps.structure</artifactId>
-            <version>${project.version}</version>
-            <type>zip</type>
         </dependency>
 
         <dependency>

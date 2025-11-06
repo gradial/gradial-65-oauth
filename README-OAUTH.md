@@ -12,13 +12,13 @@ This project implements a dynamic OAuth scope system for Adobe Experience Manage
 ## Project Structure
 
 ```
-gradial-65/
+gradial/
 ├── core/                    # Java bundle with OAuth implementation
-│   └── src/main/java/com/gradial65/core/oauth/
+│   └── src/main/java/com/gradial/core/oauth/
 │       ├── config/         # OSGi configuration interfaces
 │       └── scopes/         # Dynamic scope implementation
 ├── ui.config/              # OSGi configurations
-│   └── src/main/content/jcr_root/apps/gradial-65/osgiconfig/
+│   └── src/main/content/jcr_root/apps/gradial/osgiconfig/
 │       └── config.author/  # OAuth scope configurations
 ├── ui.apps/                # AEM application components
 ├── ui.content/             # Sample content
@@ -70,7 +70,7 @@ mvn clean install -PautoInstallPackage
 
 ### Creating a New OAuth Scope
 
-1. Create a new OSGi configuration file in `ui.config/src/main/content/jcr_root/apps/gradial-65/osgiconfig/config.author/`:
+1. Create a new OSGi configuration file in `ui.config/src/main/content/jcr_root/apps/gradial/osgiconfig/config.author/`:
 
 ```json
 {
@@ -80,7 +80,7 @@ mvn clean install -PautoInstallPackage
 }
 ```
 
-2. Name the file following the pattern: `com.gradial65.core.oauth.scopes.DynamicScope~[scope-identifier].cfg.json`
+2. Name the file following the pattern: `com.gradial.core.oauth.scopes.DynamicScope~[scope-identifier].cfg.json`
 
 3. Deploy the configuration:
 ```bash
@@ -159,14 +159,14 @@ mvn clean install -PautoInstallSinglePackage
 
 3. Access OSGi console: http://localhost:4502/system/console/components
 
-4. Verify OAuth scopes are registered: Search for `com.gradial65.core.oauth.scopes.DynamicScope`
+4. Verify OAuth scopes are registered: Search for `com.gradial.core.oauth.scopes.DynamicScope`
 
 ## Troubleshooting
 
 ### Component Not Starting
 
 If the DynamicScope component shows as "no config" in OSGi:
-1. Verify configuration PID matches: `com.gradial65.core.oauth.scopes.DynamicScope`
+1. Verify configuration PID matches: `com.gradial.core.oauth.scopes.DynamicScope`
 2. Check configuration file naming pattern
 3. Ensure configuration is deployed to correct runmode folder
 

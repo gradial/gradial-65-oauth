@@ -15,6 +15,6 @@
   ~ limitations under the License.
   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~-->
 <workspaceFilter version="1.0">
-    <filter root="/apps/gradial-65-packages"/>
-    <filter root="/apps/gradial-65-vendor-packages"/>
+    <filter root="/apps/gradial-packages"/>
+    <filter root="/apps/gradial-vendor-packages"/>
 </workspaceFilter>

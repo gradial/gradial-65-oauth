@@ -14,6 +14,6 @@
  *  limitations under the License.
  */
 @Version("1.0")
-package com.gradial65.core.oauth.scopes;
+package com.gradial.core.oauth.config;
 
 import org.osgi.annotation.versioning.Version;

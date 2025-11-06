@@ -120,3 +120,6 @@ aem-oauth-test.d.ts
 # Package lock files
 package-lock.json
 CLAUDE.md
+/.claude
+MAVEN_CENTRAL_DEPLOYMENT.md
+CUSTOMER_INSTALLATION.md

@@ -13,7 +13,7 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-package com.gradial65.core.testcontext;
+package com.gradial.core.testcontext;
 
 import static com.adobe.cq.wcm.core.components.testing.mock.ContextPlugins.CORE_COMPONENTS;
 import static org.apache.sling.testing.mock.caconfig.ContextPlugins.CACONFIG;

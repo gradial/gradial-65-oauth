@@ -21,8 +21,8 @@
     <!-- P A R E N T  P R O J E C T  D E S C R I P T I O N                      -->
     <!-- ====================================================================== -->
     <parent>
-        <groupId>com.gradial65</groupId>
-        <artifactId>gradial-65</artifactId>
+        <groupId>com.gradial</groupId>
+        <artifactId>gradial-oauth</artifactId>
         <version>1.1.0-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
@@ -30,7 +30,7 @@
     <!-- ====================================================================== -->
     <!-- P R O J E C T  D E S C R I P T I O N                                   -->
     <!-- ====================================================================== -->
-    <artifactId>gradial-65.ui.config</artifactId>
+    <artifactId>gradial.ui.config</artifactId>
     <packaging>content-package</packaging>
     <name>Gradial (6.5) - UI config</name>
     <description>UI config package for Gradial (6.5)</description>
@@ -51,12 +51,6 @@
                     </properties>
                     <packageType>container</packageType>
                     <showImportPackageReport>false</showImportPackageReport>
-                    <repositoryStructurePackages>
-                        <repositoryStructurePackage>
-                            <groupId>com.gradial65</groupId>
-                            <artifactId>gradial-65.ui.apps.structure</artifactId>
-                        </repositoryStructurePackage>
-                    </repositoryStructurePackages>
                 </configuration>
             </plugin>
             <plugin>
@@ -65,13 +59,4 @@
             </plugin>
         </plugins>
     </build>
-
-    <dependencies>
-        <dependency>
-            <groupId>com.gradial65</groupId>
-            <artifactId>gradial-65.ui.apps.structure</artifactId>
-            <version>${project.version}</version>
-            <type>zip</type>
-        </dependency>
-    </dependencies>
 </project>

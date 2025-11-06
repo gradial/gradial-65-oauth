@@ -1,4 +1,4 @@
-package com.gradial65.core.oauth.scopes;
+package com.gradial.core.oauth.scopes;
 
 import java.util.Arrays;
 import java.util.Objects;
@@ -18,7 +18,7 @@ import org.slf4j.LoggerFactory;
 
 import com.adobe.granite.oauth.server.Scope;
 import com.adobe.granite.oauth.server.ScopeWithPrivileges;
-import com.gradial65.core.oauth.config.DynamicOAuthScopeConfiguration;
+import com.gradial.core.oauth.config.DynamicOAuthScopeConfiguration;
 
 /**
  * Dynamic implementation of OAuth Scope that can be configured via OSGi configuration.
@@ -26,7 +26,7 @@ import com.gradial65.core.oauth.config.DynamicOAuthScopeConfiguration;
  */
 @Component(
         service = Scope.class,
-        configurationPid = "com.gradial65.core.oauth.scopes.DynamicScope",
+        configurationPid = "com.gradial.core.oauth.scopes.DynamicScope",
         configurationPolicy = ConfigurationPolicy.REQUIRE
 )
 @Designate(ocd = DynamicOAuthScopeConfiguration.class, factory = true)

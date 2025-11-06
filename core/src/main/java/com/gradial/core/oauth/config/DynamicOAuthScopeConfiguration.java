@@ -1,4 +1,4 @@
-package com.gradial65.core.oauth.config;
+package com.gradial.core.oauth.config;
 
 import org.osgi.service.metatype.annotations.AttributeDefinition;
 import org.osgi.service.metatype.annotations.ObjectClassDefinition;

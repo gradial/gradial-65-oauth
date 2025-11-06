@@ -22,8 +22,8 @@
     <!-- P A R E N T  P R O J E C T  D E S C R I P T I O N                      -->
     <!-- ====================================================================== -->
     <parent>
-        <groupId>com.gradial65</groupId>
-        <artifactId>gradial-65</artifactId>
+        <groupId>com.gradial</groupId>
+        <artifactId>gradial-oauth</artifactId>
         <version>1.1.0-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
@@ -31,9 +31,9 @@
     <!-- ====================================================================== -->
     <!-- P R O J E C T  D E S C R I P T I O N                                   -->
     <!-- ====================================================================== -->
-    <artifactId>gradial-65.all</artifactId>
+    <artifactId>gradial.all</artifactId>
     <packaging>content-package</packaging>
-    <name>Gradial (6.5) - All</name>
+    <name>Gradial - All</name>
     <description>All content package for Gradial (6.5)</description>
 
     <!-- ====================================================================== -->
@@ -49,33 +49,27 @@
                 <artifactId>filevault-package-maven-plugin</artifactId>
                 <extensions>true</extensions>
                 <configuration>
-                    <group>com.gradial65</group>
+                    <group>com.gradial</group>
                     <packageType>container</packageType>
                     <!-- skip sub package validation for now as some vendor packages like CIF apps will not pass -->
                     <skipSubPackageValidation>true</skipSubPackageValidation>
                     <embeddeds>
                         <embedded>
-                            <groupId>com.gradial65</groupId>
-                            <artifactId>gradial-65.ui.apps</artifactId>
+                            <groupId>com.gradial</groupId>
+                            <artifactId>gradial.ui.apps</artifactId>
                             <type>zip</type>
-                            <target>/apps/gradial-65-packages/application/install</target>
+                            <target>/apps/gradial-packages/application/install</target>
                         </embedded>
                         <embedded>
-                            <groupId>com.gradial65</groupId>
-                            <artifactId>gradial-65.core</artifactId>
-                            <target>/apps/gradial-65-packages/application/install</target>
+                            <groupId>com.gradial</groupId>
+                            <artifactId>gradial.core</artifactId>
+                            <target>/apps/gradial-packages/application/install</target>
                         </embedded>
                         <embedded>
-                            <groupId>com.gradial65</groupId>
-                            <artifactId>gradial-65.ui.content</artifactId>
+                            <groupId>com.gradial</groupId>
+                            <artifactId>gradial.ui.config</artifactId>
                             <type>zip</type>
-                            <target>/apps/gradial-65-packages/content/install</target>
-                        </embedded>
-                        <embedded>
-                            <groupId>com.gradial65</groupId>
-                            <artifactId>gradial-65.ui.config</artifactId>
-                            <type>zip</type>
-                            <target>/apps/gradial-65-packages/application/install</target>
+                            <target>/apps/gradial-packages/application/install</target>
                         </embedded>
                     </embeddeds>
                 </configuration>
@@ -167,20 +161,14 @@
     <!-- ====================================================================== -->
     <dependencies>
         <dependency>
-            <groupId>com.gradial65</groupId>
-            <artifactId>gradial-65.ui.apps</artifactId>
+            <groupId>com.gradial</groupId>
+            <artifactId>gradial.ui.apps</artifactId>
             <version>${project.version}</version>
             <type>zip</type>
         </dependency>
         <dependency>
-            <groupId>com.gradial65</groupId>
-            <artifactId>gradial-65.ui.content</artifactId>
-            <version>${project.version}</version>
-            <type>zip</type>
-        </dependency>
-        <dependency>
-            <groupId>com.gradial65</groupId>
-            <artifactId>gradial-65.ui.config</artifactId>
+            <groupId>com.gradial</groupId>
+            <artifactId>gradial.ui.config</artifactId>
             <version>${project.version}</version>
             <type>zip</type>
         </dependency>
