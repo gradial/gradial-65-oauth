@@ -22,7 +22,7 @@
     <!-- P A R E N T  P R O J E C T  D E S C R I P T I O N                      -->
     <!-- ====================================================================== -->
     <parent>
-        <groupId>com.gradial</groupId>
+        <groupId>io.github.gradial</groupId>
         <artifactId>gradial-oauth</artifactId>
         <version>1.1.0-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath>
@@ -58,24 +58,24 @@
                 <artifactId>filevault-package-maven-plugin</artifactId>
                 <extensions>true</extensions>
                 <configuration>
-                    <group>com.gradial</group>
+                    <group>io.github.gradial</group>
                     <packageType>container</packageType>
                     <!-- skip sub package validation for now as some vendor packages like CIF apps will not pass -->
                     <skipSubPackageValidation>true</skipSubPackageValidation>
                     <embeddeds>
                         <embedded>
-                            <groupId>com.gradial</groupId>
+                            <groupId>io.github.gradial</groupId>
                             <artifactId>gradial.ui.apps</artifactId>
                             <type>zip</type>
                             <target>/apps/gradial-packages/application/install</target>
                         </embedded>
                         <embedded>
-                            <groupId>com.gradial</groupId>
+                            <groupId>io.github.gradial</groupId>
                             <artifactId>gradial.core</artifactId>
                             <target>/apps/gradial-packages/application/install</target>
                         </embedded>
                         <embedded>
-                            <groupId>com.gradial</groupId>
+                            <groupId>io.github.gradial</groupId>
                             <artifactId>gradial.ui.config</artifactId>
                             <type>zip</type>
                             <target>/apps/gradial-packages/application/install</target>
@@ -170,13 +170,13 @@
     <!-- ====================================================================== -->
     <dependencies>
         <dependency>
-            <groupId>com.gradial</groupId>
+            <groupId>io.github.gradial</groupId>
             <artifactId>gradial.ui.apps</artifactId>
             <version>${project.version}</version>
             <type>zip</type>
         </dependency>
         <dependency>
-            <groupId>com.gradial</groupId>
+            <groupId>io.github.gradial</groupId>
             <artifactId>gradial.ui.config</artifactId>
             <version>${project.version}</version>
             <type>zip</type>
