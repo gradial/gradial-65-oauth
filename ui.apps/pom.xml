@@ -60,7 +60,7 @@
                     <properties>
                         <cloudManagerTarget>none</cloudManagerTarget>
                     </properties>
-                    <group>com.gradial</group>
+                    <group>io.github.gradial</group>
                     <name>gradial.ui.apps</name>
                     <packageType>application</packageType>
                     <dependencies>
@@ -118,7 +118,7 @@
     <!-- ====================================================================== -->
     <dependencies>
         <dependency>
-            <groupId>com.gradial</groupId>
+            <groupId>io.github.gradial</groupId>
             <artifactId>gradial.core</artifactId>
             <version>${project.version}</version>
         </dependency>
