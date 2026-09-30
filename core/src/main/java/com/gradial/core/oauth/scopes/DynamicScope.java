@@ -10,7 +10,6 @@ import org.osgi.service.cm.ConfigurationAdmin;
 import org.osgi.service.component.annotations.Activate;
 import org.osgi.service.component.annotations.Component;
 import org.osgi.service.component.annotations.ConfigurationPolicy;
-import org.osgi.service.component.annotations.Modified;
 import org.osgi.service.component.annotations.Reference;
 import org.osgi.service.metatype.annotations.Designate;
 import org.slf4j.Logger;
@@ -42,12 +41,20 @@ public class DynamicScope implements ScopeWithPrivileges {
     private DynamicOAuthScopeConfiguration config;
 
     /**
-     * Activates or modifies this component with the provided configuration.
+     * Activates this component with the provided configuration.
+     *
+     * <p>Deliberately not also bound to {@code @Modified}: Adobe's
+     * {@code OAuth2ResourceServerImpl} keys its allowed-scope map by
+     * {@link Scope#getName()} captured at bind time in {@code bindScope}/{@code unbindScope}.
+     * A config edit handled via {@code modified} changes {@code getName()}'s return value
+     * in place without re-registering the service, so the resource server keeps the stale
+     * name bound and rejects tokens for the new one. Omitting {@code @Modified} makes SCR
+     * deactivate and reactivate the component on every config change, forcing an
+     * unbind/bind cycle with the correct name.
      *
      * @param config The OSGi configuration for this scope
      */
     @Activate
-    @Modified
     protected void activate(DynamicOAuthScopeConfiguration config) {
         this.config = config;
         LOGGER.info("Activated dynamic OAuth scope: {}", config.scopeName());
