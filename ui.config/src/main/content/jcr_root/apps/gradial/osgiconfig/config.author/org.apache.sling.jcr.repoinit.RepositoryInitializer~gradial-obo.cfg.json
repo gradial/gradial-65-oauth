@@ -1,0 +1,5 @@
+{
+  "scripts": [
+    "create service user gradial-obo-state with path system/gradial\ncreate path (nt:unstructured) /var/gradial/obo/grants\nset ACL for everyone\n  deny jcr:read on /var/gradial/obo\nend\nset ACL for gradial-obo-state\n  allow jcr:read,rep:write on /var/gradial/obo\n  allow jcr:read on /home/users\nend"
+  ]
+}
