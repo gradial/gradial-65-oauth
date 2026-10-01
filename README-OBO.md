@@ -24,7 +24,7 @@ Add `com.gradial.core.oauth.obo.OboService.cfg.json` to your project's `config.a
 
 The callback is the target of the Gradial implementation in progress; the corresponding Gradial release must be available before customer setup. Match callbacks exactly. Remote callbacks/origins must use HTTPS; HTTP is allowed only for loopback development. `publicOrigin` has no path or trailing slash and matches the browser's Origin header. Keep the random client secret in Gradial's encrypted credential storage; the package stores only its hash. Never use a user's password as the client secret.
 
-The Author configuration creates `gradial-obo-state` and maps `gradial.core:obo`. This service user manages `/var/gradial/obo` and reads user records to reject deleted, disabled and system users. Ordinary users cannot read the delegation store. The state service user has no content-write permission. Review these ACLs against the deployment's existing permissions.
+The Author configuration creates `gradial-obo-state` and maps `gradial.obo:obo`. The OBO implementation is packaged as the separate `io.github.gradial:gradial.obo` bundle; `io.github.gradial:gradial.core` remains the legacy OAuth bundle. This service user manages `/var/gradial/obo` and reads user records to reject deleted, disabled and system users. Ordinary users cannot read the delegation store. The state service user has no content-write permission. Review these ACLs against the deployment's existing permissions.
 
 Allow `/bin/gradial/obo/authorize`, `/bin/gradial/obo/token` and `/bin/gradial/obo/revoke` through Author proxies. Token/revocation requests use form-encoded POST and confidential-client authentication. Keep credentials out of logs. Do not exclude authorization from AEM CSRF protection.
 
@@ -34,7 +34,7 @@ Cloud runtime and IMS entitlement revocation have not yet been verified for this
 
 For the package-based candidate, an AEM developer must:
 
-1. Include an OBO-capable Gradial bundle in the existing project's Author install location. The current candidate is `1.2.2-SNAPSHOT`, not a verified published Cloud release. Do not assume an older release contains this feature.
+1. Include the separate OBO-capable `io.github.gradial:gradial.obo` bundle in the existing project's Author install location. The current candidate is `1.2.2-SNAPSHOT`, not a verified published Cloud release. Do not assume an older release contains this feature. The prior native proof artifact predates this split and does not establish the split bundle's Cloud runtime behavior.
 2. Put the supplied `org.apache.sling.serviceusermapping.impl.ServiceUserMapperImpl.amended~gradial-obo.cfg.json` and `org.apache.sling.jcr.repoinit.RepositoryInitializer~gradial-obo.cfg.json` under that project's `config.author`. Keep the filters limited to those configurations and the bundle; do not replace unrelated `/apps/gradial` code.
 3. Add the `OboService` configuration above with a dedicated client, trusted Author origin and exact callback. This client belongs to this package; it is not an Adobe Developer Console OAuth Web App registration. OpenAPI `api.yaml` client allowlisting does not enable this protocol.
 4. Commit the code and configuration and deploy through the customer's existing Cloud Manager code pipeline. A new separate pipeline is not required. [Cloud Package Manager](https://experienceleague.adobe.com/en/docs/experience-manager-cloud-service/content/implementing/developer-tools/package-manager) can install mutable content, but cannot deploy this Java code.
