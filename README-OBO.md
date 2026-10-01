@@ -15,18 +15,35 @@ Add `com.gradial.core.oauth.obo.OboService.cfg.json` to your project's `config.a
   "enabled": true,
   "clientId": "gradial",
   "clientSecretSha256": "<SHA-256 of a random confidential-client secret: 64 lowercase hex characters>",
-  "redirectUris": ["https://your-gradial-host.example/api/integrations/aem/callback"],
+  "redirectUris": ["https://your-gradial-host.example/api/integrations/aem-obo/callback"],
   "publicOrigin": "https://your-author.example",
   "accessTokenSeconds": 300,
   "grantSeconds": 2592000
 }
 ```
 
-The callback illustrates the protocol; it is not an implemented Gradial route. Register the actual callback when Gradial is wired. Match callbacks exactly. Remote callbacks/origins must use HTTPS; HTTP is allowed only for loopback development. `publicOrigin` has no path or trailing slash and matches the browser's Origin header. Keep the random client secret in Gradial's encrypted credential storage; the package stores only its hash. Never use a user's password as the client secret.
+The callback is the target of the Gradial implementation in progress; the corresponding Gradial release must be available before customer setup. Match callbacks exactly. Remote callbacks/origins must use HTTPS; HTTP is allowed only for loopback development. `publicOrigin` has no path or trailing slash and matches the browser's Origin header. Keep the random client secret in Gradial's encrypted credential storage; the package stores only its hash. Never use a user's password as the client secret.
 
 The Author configuration creates `gradial-obo-state` and maps `gradial.core:obo`. This service user manages `/var/gradial/obo` and reads user records to reject deleted, disabled and system users. Ordinary users cannot read the delegation store. The state service user has no content-write permission. Review these ACLs against the deployment's existing permissions.
 
 Allow `/bin/gradial/obo/authorize`, `/bin/gradial/obo/token` and `/bin/gradial/obo/revoke` through Author proxies. Token/revocation requests use form-encoded POST and confidential-client authentication. Keep credentials out of logs. Do not exclude authorization from AEM CSRF protection.
+
+## AEM as a Cloud Service deployment
+
+Cloud runtime and IMS entitlement revocation have not yet been verified for this extension. Adobe's [Author authentication matrix](https://experienceleague.adobe.com/en/docs/experience-manager-learn/cloud-service/authentication/authentication) does not list OAuth as a supported Author option. A successful custom-module test would establish runtime behavior, but would not by itself establish Adobe support. Resolve these questions before customer rollout.
+
+For the package-based candidate, an AEM developer must:
+
+1. Include an OBO-capable Gradial bundle in the existing project's Author install location. The current candidate is `1.2.2-SNAPSHOT`, not a verified published Cloud release. Do not assume an older release contains this feature.
+2. Put the supplied `org.apache.sling.serviceusermapping.impl.ServiceUserMapperImpl.amended~gradial-obo.cfg.json` and `org.apache.sling.jcr.repoinit.RepositoryInitializer~gradial-obo.cfg.json` under that project's `config.author`. Keep the filters limited to those configurations and the bundle; do not replace unrelated `/apps/gradial` code.
+3. Add the `OboService` configuration above with a dedicated client, trusted Author origin and exact callback. This client belongs to this package; it is not an Adobe Developer Console OAuth Web App registration. OpenAPI `api.yaml` client allowlisting does not enable this protocol.
+4. Commit the code and configuration and deploy through the customer's existing Cloud Manager code pipeline. A new separate pipeline is not required. [Cloud Package Manager](https://experienceleague.adobe.com/en/docs/experience-manager-cloud-service/content/implementing/developer-tools/package-manager) can install mutable content, but cannot deploy this Java code.
+5. Verify the bundle and foundation services, then test with an IMS-backed non-admin user whose normal Author product profile and content permissions are already configured. Deployment must not grant that user extra content permissions.
+6. Once the matching Gradial release and organization rollout flag are enabled, select **Authenticate as user** in the regular AEM integration and enter the Author URL, client ID and raw client secret. Each user then connects their own account through AEM/IMS login and consent.
+
+The deployment is needed for initial code/configuration installation and subsequent code/configuration changes. User connection and automatic token renewal do not require further pipelines.
+
+For development only, an [RDE](https://experienceleague.adobe.com/en/docs/experience-manager-cloud-service/content/implementing/developing/rapid-development-environments) accepts direct bundle and OSGi configuration installation through Adobe's RDE CLI. Install the bundle and the two foundation configurations on Author, verify them, and enable the test client last. RDE success must be followed by validation in a normal Cloud development environment before production promotion.
 
 ## Connect
 
@@ -47,7 +64,7 @@ The Oak login module validates the opaque credential and establishes the origina
 
 ## Renewal and disconnect
 
-- POST `grant_type=refresh_token` and `refresh_token` with client authentication. Gradial must serialize refresh per connection. A refresh rotates both credentials and invalidates old access. Replaying a consumed refresh credential revokes the family; reconnect instead of falling back to a service account.
+- POST `grant_type=refresh_token` and `refresh_token` with client authentication. Gradial must serialize refresh per connection, acting user and consent grant. A reconnect must isolate its cache and prevent an older renewal from overwriting the new credentials. A refresh rotates both credentials and invalidates old access. Replaying a consumed refresh credential revokes the family; reconnect instead of falling back to a service account.
 - Access lifetime is 30–3600 seconds. The grant has an absolute lifetime of at most 30 days; refresh does not extend it. The user must sign into AEM and approve again afterward. External identity-provider session expiry is separate from this explicit delegation lifetime.
 - POST `token` to `/bin/gradial/obo/revoke` with client authentication. Either current credential revokes the family. Unknown credentials return 200 without revealing grant existence. Verify subsequent access and refresh fail; 200 alone is insufficient.
 - Deleted/disabled AEM users cannot access or renew. Grants bind the user node identifier and protected creation timestamp so a recreated username cannot inherit old credentials. AEM permission changes affect new repository sessions. Browser logout is separate from disconnecting Gradial. IMS product-profile removal and synchronization require a separate Cloud lifecycle proof.
