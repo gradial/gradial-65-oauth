@@ -2,11 +2,11 @@
 
 This extension uses the ordinary AEM user's repository session for existing Author HTTP APIs. AEM enforces that user's current permissions and records that user as the modifying actor. Existing DynamicScope/Granite OAuth connections remain independent.
 
-This is the AEM side of ENG-4998. Gradial still needs the per-user connection, callback, refresh coordination and authentication picker inside its existing regular AEM integration. This package does not add that UI or claim compatibility with every AEM version.
+This is the AEM side of ENG-4998 and ENG-9393. The matching Gradial change adds **Connect AEM** alongside the existing connection. Keep the existing connection ID, OAuth authentication mode, client credentials and network settings. The separate OBO client does not replace them. This package does not add the Gradial UI or establish compatibility with untested AEM deployments.
 
 ## Enable on Author
 
-Upgrade the existing `io.github.gradial:gradial.all` package through the customer's deployment pipeline. No delegation services are enabled until an explicit customer configuration is supplied. Deploy on Author only.
+Deploy the separate `io.github.gradial:gradial.obo` bundle and its two foundation configurations through the customer's existing AEM deployment pipeline, on Author only. The current candidate is `1.2.2-SNAPSHOT`; customer rollout requires the matching reviewed, published immutable artifact. There is no need to replace the legacy OAuth bundle or change its scope configuration. No delegation services are enabled until an explicit customer configuration is supplied.
 
 Add `com.gradial.core.oauth.obo.OboService.cfg.json` to your project's `config.author`:
 
@@ -22,11 +22,15 @@ Add `com.gradial.core.oauth.obo.OboService.cfg.json` to your project's `config.a
 }
 ```
 
-The callback is the target of the Gradial implementation in progress; the corresponding Gradial release must be available before customer setup. Match callbacks exactly. Remote callbacks/origins must use HTTPS; HTTP is allowed only for loopback development. `publicOrigin` has no path or trailing slash and matches the browser's Origin header. Keep the random client secret in Gradial's encrypted credential storage; the package stores only its hash. Never use a user's password as the client secret.
+The corresponding Gradial release must be available before customer setup. Match callbacks exactly. Remote callbacks/origins must use HTTPS; HTTP is allowed only for loopback development. `publicOrigin` has no path or trailing slash and matches the Author origin users open in their browser. Keep the random client secret in Gradial's encrypted credential storage; the package stores only its hash. Never use a user's password as the client secret.
 
 The Author configuration creates `gradial-obo-state` and maps `gradial.obo:obo`. The OBO implementation is packaged as the separate `io.github.gradial:gradial.obo` bundle; `io.github.gradial:gradial.core` remains the legacy OAuth bundle. This service user manages `/var/gradial/obo` and reads user records to reject deleted, disabled and system users. Ordinary users cannot read the delegation store. The state service user has no content-write permission. Review these ACLs against the deployment's existing permissions.
 
 Allow `/bin/gradial/obo/authorize`, `/bin/gradial/obo/token` and `/bin/gradial/obo/revoke` through Author proxies. Token/revocation requests use form-encoded POST and confidential-client authentication. Keep credentials out of logs. Do not exclude authorization from AEM CSRF protection.
+
+In Gradial, open the existing AEM integration's **General** settings. Under **Per-user AEM sign-in**, enter the OBO client ID, its raw random secret and the browser's **AEM sign-in origin**, then choose **Enable per-user sign-in**. The browser origin can differ from the integration's proxy URL; server token requests retain the connection's proxy/mTLS settings. Each person chooses **Connect AEM**, signs into their own ordinary AEM account using the existing login/SSO and approves the displayed identity. No profile-email match or per-user impersonator grant is needed. A person who has not connected cannot use the protected integration through the service account.
+
+These are OAuth client credentials, not AEM Basic-auth credentials. Gradial sends them in the token request body. The customer keeps their existing OAuth connection and users keep their existing AEM login and permissions.
 
 ## AEM as a Cloud Service deployment
 
@@ -39,7 +43,7 @@ For the package-based candidate, an AEM developer must:
 3. Add the `OboService` configuration above with a dedicated client, trusted Author origin and exact callback. This client belongs to this package; it is not an Adobe Developer Console OAuth Web App registration. OpenAPI `api.yaml` client allowlisting does not enable this protocol.
 4. Commit the code and configuration and deploy through the customer's existing Cloud Manager code pipeline. A new separate pipeline is not required. [Cloud Package Manager](https://experienceleague.adobe.com/en/docs/experience-manager-cloud-service/content/implementing/developer-tools/package-manager) can install mutable content, but cannot deploy this Java code.
 5. Verify the bundle and foundation services, then test with an IMS-backed non-admin user whose normal Author product profile and content permissions are already configured. Deployment must not grant that user extra content permissions.
-6. Once the matching Gradial release and organization rollout flag are enabled, select **Authenticate as user** in the regular AEM integration and enter the Author URL, client ID and raw client secret. Each user then connects their own account through AEM/IMS login and consent.
+6. Once the matching Gradial release is available, enable **Per-user AEM sign-in** on the existing regular AEM integration as described above. Each user connects their own account through AEM/IMS login and consent. Keep the existing integration authentication mode and credentials.
 
 The deployment is needed for initial code/configuration installation and subsequent code/configuration changes. User connection and automatic token renewal do not require further pipelines.
 
@@ -66,7 +70,7 @@ The Oak login module validates the opaque credential and establishes the origina
 
 - POST `grant_type=refresh_token` and `refresh_token` with client authentication. Gradial must serialize refresh per connection, acting user and consent grant. A reconnect must isolate its cache and prevent an older renewal from overwriting the new credentials. A refresh rotates both credentials and invalidates old access. Replaying a consumed refresh credential revokes the family; reconnect instead of falling back to a service account.
 - Access lifetime is 30–3600 seconds. The grant has an absolute lifetime of at most 30 days; refresh does not extend it. The user must sign into AEM and approve again afterward. External identity-provider session expiry is separate from this explicit delegation lifetime.
-- POST `token` to `/bin/gradial/obo/revoke` with client authentication. Either current credential revokes the family. Unknown credentials return 200 without revealing grant existence. Verify subsequent access and refresh fail; 200 alone is insufficient.
+- POST `token` to `/bin/gradial/obo/revoke` with client authentication. Either current credential or a previously consumed refresh credential revokes the family. This allows disconnect after a lost refresh response. Unknown credentials return 200 without revealing grant existence. Verify subsequent access and refresh fail; 200 alone is insufficient.
 - Deleted/disabled AEM users cannot access or renew. Grants bind the user node identifier and protected creation timestamp so a recreated username cannot inherit old credentials. AEM permission changes affect new repository sessions. Browser logout is separate from disconnecting Gradial. IMS product-profile removal and synchronization require a separate Cloud lifecycle proof.
 - Client, secret, callback or trusted-origin changes invalidate existing grants. Disabling the service blocks delegation. Hourly cleanup removes at most 1,000 expired records per pass, advancing through the grant nodes; traversal cost grows with the stored grant count. Raw access/refresh/consent credentials are not persisted; records contain cryptographic hashes.
 

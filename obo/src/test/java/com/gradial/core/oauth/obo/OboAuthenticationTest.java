@@ -21,6 +21,8 @@ import javax.servlet.http.HttpServletResponse;
 
 import org.apache.jackrabbit.oak.api.AuthInfo;
 import org.apache.sling.auth.core.spi.AuthenticationInfo;
+import org.apache.sling.auth.core.AuthenticationSupport;
+import org.apache.sling.api.resource.ResourceResolver;
 import org.junit.jupiter.api.Test;
 
 class OboAuthenticationTest {
@@ -51,8 +53,11 @@ class OboAuthenticationTest {
         when(service.authenticate("invalid")).thenThrow(OboService.invalid());
         HttpServletRequest request = mock(HttpServletRequest.class);
         when(request.getHeader("Authorization")).thenReturn("GradialOBO invalid");
-        assertSame(AuthenticationInfo.FAIL_AUTH, handler(service).extractCredentials(request, mock(HttpServletResponse.class)));
-        verify(request).setAttribute("gradial.obo.failed", Boolean.TRUE);
+        HttpServletResponse response = mock(HttpServletResponse.class);
+        assertSame(AuthenticationInfo.DOING_AUTH, handler(service).extractCredentials(request, response));
+        verify(response).setStatus(403);
+        verify(response).flushBuffer();
+        verify(response, never()).setHeader(eq("WWW-Authenticate"), anyString());
     }
 
     @Test
@@ -77,6 +82,31 @@ class OboAuthenticationTest {
         assertInstanceOf(OboCredentials.class, info.get("user.jcr.credentials"));
         assertEquals("GradialOBO", info.getAuthType());
         assertNull(info.get("user.jcr.session"));
+    }
+
+    @Test
+    void failedRepositoryLoginCommitsDenialBeforeSlingCanRequestBasicCredentials() throws Exception {
+        HttpServletResponse response = mock(HttpServletResponse.class);
+        handler(mock(OboService.class)).authenticationFailed(mock(HttpServletRequest.class), response,
+                new AuthenticationInfo("GradialOBO", "author"));
+        verify(response).setStatus(403);
+        verify(response).flushBuffer();
+        verify(response, never()).setHeader(eq("WWW-Authenticate"), anyString());
+    }
+
+    @Test
+    void successfulAuthenticationMustHaveTheActualDelegatedResolverIdentity() throws Exception {
+        OboAuthenticationHandler handler = handler(mock(OboService.class));
+        HttpServletRequest request = mock(HttpServletRequest.class);
+        ResourceResolver resolver = mock(ResourceResolver.class);
+        when(request.getAttribute(AuthenticationSupport.REQUEST_ATTRIBUTE_RESOLVER)).thenReturn(resolver);
+        when(resolver.getUserID()).thenReturn("admin");
+        HttpServletResponse response = mock(HttpServletResponse.class);
+        assertTrue(handler.authenticationSucceeded(request, response, new AuthenticationInfo("GradialOBO", "author")));
+        verify(response).setStatus(403);
+        when(resolver.getUserID()).thenReturn("author");
+        assertFalse(handler.authenticationSucceeded(request, mock(HttpServletResponse.class),
+                new AuthenticationInfo("GradialOBO", "author")));
     }
 
     @Test
