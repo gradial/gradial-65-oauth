@@ -32,11 +32,16 @@ public class OboServlet extends SlingAllMethodsServlet {
             String user = browserUser(request);
             if (!"code".equals(parameter(request, "response_type"))
                     || !"S256".equals(parameter(request, "code_challenge_method"))) throw OboService.invalid();
-            String nonce = service.consent(user, parameter(request, "client_id"), parameter(request, "redirect_uri"),
+            String redirect = parameter(request, "redirect_uri");
+            String nonce = service.consent(user, parameter(request, "client_id"), redirect,
                     parameter(request, "code_challenge"), parameter(request, "state"));
+            String callbackOrigin = OboService.checkedUri(redirect).resolve("/").toASCIIString();
             String scriptNonce = OboService.random();
+            // AEM's referrer filter must recognize the consent POST; callbacks remain cross-origin private.
+            response.setHeader("Referrer-Policy", "same-origin");
             response.setHeader("Content-Security-Policy", "default-src 'none'; script-src 'nonce-" + scriptNonce
-                    + "'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'");
+                    + "'; connect-src 'self'; form-action 'self' " + callbackOrigin
+                    + "; frame-ancestors 'none'; base-uri 'none'");
             response.setContentType("text/html;charset=UTF-8");
             response.getWriter().write("<!doctype html><html><head><title>Connect Gradial</title></head><body>"
                     + "<h1>Connect Gradial as " + html(user) + "</h1>"
