@@ -39,21 +39,12 @@ public class OboServlet extends SlingAllMethodsServlet {
             String scriptNonce = OboService.random();
             // AEM's referrer filter must recognize the consent POST; callbacks remain cross-origin private.
             response.setHeader("Referrer-Policy", "same-origin");
+            String styleNonce = OboService.random();
             response.setHeader("Content-Security-Policy", "default-src 'none'; script-src 'nonce-" + scriptNonce
-                    + "'; connect-src 'self'; form-action 'self' " + callbackOrigin
+                    + "'; style-src 'nonce-" + styleNonce + "'; connect-src 'self'; form-action 'self' " + callbackOrigin
                     + "; frame-ancestors 'none'; base-uri 'none'");
             response.setContentType("text/html;charset=UTF-8");
-            response.getWriter().write("<!doctype html><html><head><title>Connect Gradial</title></head><body>"
-                    + "<h1>Connect Gradial as " + html(user) + "</h1>"
-                    + "<p>Gradial will use your current AEM permissions. You can revoke this connection from Gradial.</p>"
-                    + "<form method=post action='/bin/gradial/obo/authorize'><input type=hidden name=form_nonce value='"
-                    + nonce + "'><input id=csrf type=hidden name=':cq_csrf_token'>"
-                    + "<button disabled name=approve value=yes>Connect</button><button disabled name=approve value=no>Cancel</button>"
-                    + "</form><p id=error></p><script nonce='" + scriptNonce + "'>"
-                    + "fetch('/libs/granite/csrf/token.json',{credentials:'same-origin'}).then(r=>{if(!r.ok)throw Error();return r.json()})"
-                    + ".then(t=>{if(!t.token)throw Error();document.getElementById('csrf').value=t.token;"
-                    + "document.querySelectorAll('button').forEach(b=>b.disabled=false)})"
-                    + ".catch(()=>document.getElementById('error').textContent='Sign into AEM and try again.');</script></body></html>");
+            response.getWriter().write(consentPage(user, nonce, scriptNonce, styleNonce));
         } catch (OboService.InvalidDelegationException | IllegalArgumentException e) { error(response, 400, "invalid_request"); }
         catch (RepositoryException e) { error(response, 503, "temporarily_unavailable"); }
     }
@@ -110,6 +101,52 @@ public class OboServlet extends SlingAllMethodsServlet {
         return values[0];
     }
     private static String encode(String value) { return URLEncoder.encode(value, StandardCharsets.UTF_8); }
+    // Colors mirror the Gradial web app theme tokens (light and dark) so this AEM-hosted page matches the app.
+    private static final String CONSENT_STYLE = ":root{color-scheme:light dark;--bg:#fff;--fg:#0a0a0a;--muted:#737373;--card:#fff;"
+            + "--border:#e5e5e5;--input:#e5e5e5;--primary:#2b7fff;--primary-fg:#fafafa;--secondary:#f5f5f5;--secondary-fg:#171717;"
+            + "--destructive:#e7000b;--tile:#0a0a0a;--tile-fg:#fafafa;--ring:#a1a1a1}"
+            + "@media(prefers-color-scheme:dark){:root{--bg:#0a0a0a;--fg:#fafafa;--muted:#a1a1a1;--card:#171717;--border:#ffffff1a;"
+            + "--input:#ffffff26;--secondary:#262626;--secondary-fg:#fafafa;--destructive:#ff6467;--tile:#262626;--ring:#737373}}"
+            + "*{box-sizing:border-box}"
+            + "body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:1.5rem;background:var(--bg);"
+            + "color:var(--fg);font:14px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif}"
+            + "main{width:100%;max-width:26rem;background:var(--card);border:1px solid var(--border);border-radius:.75rem;padding:1.5rem}"
+            + ".logo{display:flex;align-items:center;justify-content:center;width:2.5rem;height:2.5rem;border-radius:.5rem;"
+            + "background:var(--tile);color:var(--tile-fg)}"
+            + ".logo svg{width:1.5rem;height:1.5rem}"
+            + "h1{margin:1.5rem 0 0;font-size:1.25rem;line-height:1.75rem;font-weight:500;text-wrap:balance}"
+            + "p{margin:.5rem 0 0;color:var(--muted)}"
+            + "form{margin:0}.actions{display:flex;flex-direction:row-reverse;gap:.75rem;margin-top:1.5rem}"
+            + "button{flex:1;height:2.25rem;border-radius:9999px;border:1px solid var(--input);padding:0 1rem;font:inherit;"
+            + "font-weight:500;cursor:pointer;background:var(--secondary);color:var(--secondary-fg)}"
+            + "button[value=yes]{background:var(--primary);border-color:var(--primary);color:var(--primary-fg)}"
+            + "button:focus-visible{outline:2px solid var(--ring);outline-offset:2px}"
+            + "button:disabled{opacity:.5;cursor:not-allowed}"
+            + "#error{margin-top:1rem;padding:.625rem .75rem;border:1px solid var(--destructive);border-radius:.5rem;"
+            + "color:var(--destructive)}#error:empty{display:none}";
+
+    private static final String LOGO = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='-5 -5 220 290' fill='currentColor' aria-hidden='true'>"
+            + "<path d='M98.38,58.26h50.61C181.17,58.26,207.25,32.18,207.25,0h0s-105.62,0-105.62,0C40.65,0,.94,43.63.94,97.44s43.63,97.44,97.44,97.44,97.44-43.63,97.44-97.44c0-5.82-.74-11.65-2.11-17.05h-60.05c2.49,5.15,3.89,10.94,3.89,17.05,0,21.64-17.54,39.18-39.18,39.18s-39.18-17.54-39.18-39.18,17.54-39.18,39.18-39.18Z'/>"
+            + "<path d='M140.15,224.63h-68.5c-10.98,0-19.88-8.9-19.88-19.88v-21.72h0c-22.98,0-41.6,18.63-41.61,41.6h0s0,0,0,0,0,0,0,0h0s0,0,0,0c0,31.4,25.46,56.86,56.87,56.86h129.99c0-31.41-25.46-56.87-56.87-56.87Z'/></svg>";
+
+    static String consentPage(String user, String formNonce, String scriptNonce, String styleNonce) {
+        return "<!doctype html><html lang=en><head><meta charset=utf-8>"
+                + "<meta name=viewport content='width=device-width,initial-scale=1'><title>Connect Gradial</title>"
+                + "<style nonce='" + styleNonce + "'>" + CONSENT_STYLE + "</style></head><body><main>"
+                + "<div class=logo>" + LOGO + "</div>"
+                + "<h1>Connect Gradial as " + html(user) + "</h1>"
+                + "<p>Gradial will use your current AEM permissions. You can revoke this connection from Gradial.</p>"
+                + "<form method=post action='/bin/gradial/obo/authorize'><input type=hidden name=form_nonce value='"
+                + formNonce + "'><input id=csrf type=hidden name=':cq_csrf_token'>"
+                + "<div class=actions><button name=approve value=yes disabled>Connect</button>"
+                + "<button name=approve value=no disabled>Cancel</button></div>"
+                + "</form><p id=error role=alert></p><script nonce='" + scriptNonce + "'>"
+                + "fetch('/libs/granite/csrf/token.json',{credentials:'same-origin'}).then(r=>{if(!r.ok)throw Error();return r.json()})"
+                + ".then(t=>{if(!t.token)throw Error();document.getElementById('csrf').value=t.token;"
+                + "document.querySelectorAll('button').forEach(b=>b.disabled=false)})"
+                + ".catch(()=>document.getElementById('error').textContent='Sign into AEM and try again.');</script></main></body></html>";
+    }
+
     private static String html(String value) {
         return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;").replace("'", "&#39;");
     }

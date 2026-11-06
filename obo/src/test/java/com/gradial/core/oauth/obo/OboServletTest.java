@@ -65,6 +65,38 @@ class OboServletTest {
     }
 
     @Test
+    void consentPageStylesWithANonceAndKeepsTheFormContract() throws Exception {
+        OboService service = mock(OboService.class);
+        when(service.consent(any(), any(), any(), any(), any())).thenReturn("form-nonce");
+        SlingHttpServletResponse response = mock(SlingHttpServletResponse.class);
+        StringWriter html = new StringWriter();
+        when(response.getWriter()).thenReturn(new PrintWriter(html));
+
+        servlet(service).doGet(consentRequest("https://app.example.com/callback"), response);
+
+        ArgumentCaptor<String> policies = ArgumentCaptor.forClass(String.class);
+        verify(response).setHeader(eq("Content-Security-Policy"), policies.capture());
+        String policy = policies.getValue();
+        assertTrue(policy.startsWith("default-src 'none';"));
+        assertFalse(policy.contains("unsafe-inline"));
+        java.util.regex.Matcher style = java.util.regex.Pattern.compile("style-src 'nonce-([^']+)'").matcher(policy);
+        assertTrue(style.find());
+        String page = html.toString();
+        assertTrue(page.contains("<style nonce='" + style.group(1) + "'>"));
+        java.util.regex.Matcher script = java.util.regex.Pattern.compile("script-src 'nonce-([^']+)'").matcher(policy);
+        assertTrue(script.find());
+        assertTrue(page.contains("<script nonce='" + script.group(1) + "'>"));
+        assertNotEquals(style.group(1), script.group(1));
+        assertFalse(page.contains(" style="));
+        assertTrue(page.contains("<form method=post action='/bin/gradial/obo/authorize'>"));
+        assertTrue(page.contains("name=form_nonce value='form-nonce'"));
+        assertTrue(page.contains("id=csrf type=hidden name=':cq_csrf_token'"));
+        assertTrue(page.indexOf("name=approve value=yes disabled") < page.indexOf("name=approve value=no disabled"));
+        assertTrue(page.contains("Connect Gradial as writer"));
+        assertTrue(page.contains("Sign into AEM and try again."));
+    }
+
+    @Test
     void rejectedConsentKeepsNoReferrerAndNeverAllowsACallbackDestination() throws Exception {
         String redirect = "https://unregistered.example.com/callback";
         OboService service = mock(OboService.class);
