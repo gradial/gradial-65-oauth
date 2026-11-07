@@ -22,9 +22,11 @@ Add `com.gradial.core.oauth.obo.OboService.cfg.json` to your project's `config.a
 }
 ```
 
+Optional `"allowAdministrators": true` lets `admin` and members of `administrators` connect. It is off by default, and you should leave it off: delegation hands the connected user's principals to Gradial, and for an administrator that bypasses every ACL. With it off, such users cannot consent, and a grant held by a user who later becomes an administrator stops authenticating.
+
 The corresponding Gradial release must be available before customer setup. Match callbacks exactly. Remote callbacks/origins must use HTTPS; HTTP is allowed only for loopback development. `publicOrigin` has no path or trailing slash and matches the Author origin users open in their browser. Keep the random client secret in Gradial's encrypted credential storage; the package stores only its hash. Never use a user's password as the client secret.
 
-The Author configuration creates `gradial-obo-state` and maps `gradial.obo:obo`. The OBO implementation is packaged as the separate `io.github.gradial:gradial.obo` bundle; `io.github.gradial:gradial.core` remains the legacy OAuth bundle. This service user manages `/var/gradial/obo` and reads user records to reject deleted, disabled and system users. Ordinary users cannot read the delegation store. The state service user has no content-write permission. Review these ACLs against the deployment's existing permissions.
+The Author configuration creates `gradial-obo-state` and maps `gradial.obo:obo`. The OBO implementation is packaged as the separate `io.github.gradial:gradial.obo` bundle; `io.github.gradial:gradial.core` remains the legacy OAuth bundle. This service user manages `/var/gradial/obo` and reads only `rep:User` and `rep:AuthorizableFolder` nodes under `/home/users`, plus `rep:Group` nodes under `/home/groups`, to reject deleted, disabled, system and administrator users and to bind a grant to one account. Password hashes (`rep:password`) are explicitly denied, and profile, preference, password-history and token nodes are outside the node types it may read. Nobody except the service user can read or write the delegation store: `everyone` is denied read and write on `/var/gradial/obo`. The state service user has no content-write permission. Grants and pending consents are stored under `oak:Unstructured` parents in hashed buckets, so no node has an unbounded orderable child list. Review these ACLs against the deployment's existing permissions.
 
 Allow `/bin/gradial/obo/authorize`, `/bin/gradial/obo/token` and `/bin/gradial/obo/revoke` through Author proxies. Token/revocation requests use form-encoded POST and confidential-client authentication. Keep credentials out of logs. Do not exclude authorization from AEM CSRF protection.
 
@@ -52,7 +54,7 @@ For development only, an [RDE](https://experienceleague.adobe.com/en/docs/experi
 ## Connect
 
 1. Gradial generates OAuth state and a PKCE verifier, binds them to its initiating user and redirects to `/bin/gradial/obo/authorize` with `response_type=code`, `client_id`, exact `redirect_uri`, `state`, `code_challenge` and `code_challenge_method=S256`.
-2. The user signs into AEM through its existing login. Consent displays the authenticated identity and requires Connect. AEM supplies normal CSRF protection; a separate one-use consent nonce is bound to the same user. An existing delegated credential cannot authorize another grant.
+2. The user signs into AEM through its existing login. Consent displays the authenticated identity and requires Connect. AEM supplies normal CSRF protection; a separate one-use consent nonce is bound to the same user. Consent is refused (GET and POST) for a session that is impersonating someone else: any Sling sudo cookie or parameter (the names configured in Sling's authenticator are honored, plus `sling.sudo` and `sudo`) or a resolver that reports an impersonator. Otherwise an administrator or `rep:impersonators` member could switch to another user and mint a grant that person never approved. An existing delegated credential cannot authorize another grant. `admin` and `administrators` members are refused unless `allowAdministrators` is set. Each user can hold at most five pending consents; opening more evicts the oldest, and pending consents expire after five minutes.
 3. The callback receives `code` and `state`, or `error=access_denied`. Gradial verifies its retained state and initiating user before exchanging the code. No caller-supplied username is accepted.
 4. POST `/bin/gradial/obo/token` with `grant_type=authorization_code`, `code`, `redirect_uri` and `code_verifier`. Authenticate with HTTP Basic (URL-encode ID/secret before Base64), or with form fields `client_id` and `client_secret`. Do not combine methods.
 
@@ -71,8 +73,25 @@ The Oak login module validates the opaque credential and establishes the origina
 - POST `grant_type=refresh_token` and `refresh_token` with client authentication. Gradial must serialize refresh per connection, acting user and consent grant. A reconnect must isolate its cache and prevent an older renewal from overwriting the new credentials. A refresh rotates both credentials and invalidates old access. Replaying a consumed refresh credential revokes the family; reconnect instead of falling back to a service account.
 - Access lifetime is 30–3600 seconds. The grant has an absolute lifetime of at most 30 days; refresh does not extend it. The user must sign into AEM and approve again afterward. External identity-provider session expiry is separate from this explicit delegation lifetime.
 - POST `token` to `/bin/gradial/obo/revoke` with client authentication. Either current credential or a previously consumed refresh credential revokes the family. This allows disconnect after a lost refresh response. Unknown credentials return 200 without revealing grant existence. Verify subsequent access and refresh fail; 200 alone is insufficient.
+- Reusing an authorization code revokes the grant it already produced, as RFC 6749 §4.1.2 asks.
 - Deleted/disabled AEM users cannot access or renew. Grants bind the user node identifier and protected creation timestamp so a recreated username cannot inherit old credentials. AEM permission changes affect new repository sessions. Browser logout is separate from disconnecting Gradial. IMS product-profile removal and synchronization require a separate Cloud lifecycle proof.
-- Client, secret, callback or trusted-origin changes invalidate existing grants. Disabling the service blocks delegation. Hourly cleanup removes at most 1,000 expired records per pass, advancing through the grant nodes; traversal cost grows with the stored grant count. Raw access/refresh/consent credentials are not persisted; records contain cryptographic hashes.
+- Client, secret, callback or trusted-origin changes invalidate existing grants. Raw access/refresh/consent credentials are not persisted; records contain cryptographic hashes.
+
+### How a grant ends
+
+A grant stays usable until one of these happens. Nothing else ends it.
+
+- **Disconnect from Gradial** calls `/revoke`, which revokes the whole grant family immediately.
+- **Absolute expiry** after `grantSeconds` (at most 30 days). Refresh does not extend it.
+- **Disabling the service** (`enabled: false`, or removing its configuration) blocks every authentication and refresh at once. Changing the client, secret, callbacks or origin does the same.
+- **Disabling or deleting the AEM user** blocks access and renewal, and a recreated username cannot inherit the grant.
+- **Deleting the nodes** under `/var/gradial/obo/grants` (or the whole `/var/gradial/obo` tree) as an administrator removes the grants outright.
+
+**A password change does not revoke grants.** The grant is bound to the account, not to its password or its browser sessions, so changing or resetting a password, or logging out, leaves existing delegations working until one of the events above. To cut off a user whose credentials may be compromised, disable the account or revoke from Gradial, or delete their grants.
+
+### Cleanup
+
+A scheduled job (every 10 minutes, `scheduler.runOn=LEADER` so a clustered Author runs it once) removes every expired grant and consent, with no per-run count limit. A pass stops after 60 seconds and the next one resumes where it stopped. A user cannot grow the store without bound by opening consent pages: only five pending consents per user are kept.
 
 Queued Gradial operations must retain the initiating user, and permission-sensitive caches must stay isolated. The package cannot provide those application-level guarantees by itself.
 
@@ -82,4 +101,4 @@ The implementation targets Java 11 and the existing AEM 6.5 API baseline, using 
 
 For each supported deployment, prove ordinary-user identity; allowed/denied reads and writes; real creator/modifier properties; permission changes; disabled/deleted users; renewal after expiry; single-use codes and refresh; effective revocation; concurrent refresh behavior. Inspect denied paths as administrator to confirm no content was created.
 
-Unit tests cover user/consent binding, exact callbacks/PKCE, code replay, rotation/replay revocation, expiry, disabled/deleted users, client authentication, JAAS identity and existing-handler compatibility. Live results belong in PR evidence. Keep incomplete deployments explicitly unverified.
+Unit tests cover user/consent binding, impersonated and delegated-session consent, administrator refusal, the exact consent Origin, pending-consent caps and cleanup, exact callbacks/PKCE, code replay and its revocation, credential-type confusion, rotation/replay revocation, a conflicting concurrent refresh, expiry, disabled/deleted users, client authentication, JAAS identity, the service user's ACL script and existing-handler compatibility. The in-memory repository applies writes immediately, so true multi-session concurrency and the ACL script's effect on a real Oak repository are not exercised by unit tests and need the live probes above. Live results belong in PR evidence. Keep incomplete deployments explicitly unverified.
