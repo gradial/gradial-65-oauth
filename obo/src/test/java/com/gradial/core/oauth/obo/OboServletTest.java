@@ -7,6 +7,11 @@ import static org.mockito.Mockito.*;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.lang.reflect.Field;
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
+import java.util.Map;
+
+import javax.servlet.http.Cookie;
 
 import org.apache.sling.api.SlingHttpServletRequest;
 import org.apache.sling.api.SlingHttpServletResponse;
@@ -20,6 +25,9 @@ class OboServletTest {
         Field field = OboServlet.class.getDeclaredField("service");
         field.setAccessible(true);
         field.set(servlet, service);
+        Field guard = OboServlet.class.getDeclaredField("guard");
+        guard.setAccessible(true);
+        guard.set(servlet, new OboImpersonationGuard());
         return servlet;
     }
 
@@ -111,5 +119,215 @@ class OboServletTest {
         verify(response).setHeader("Referrer-Policy", "no-referrer");
         verify(response, never()).setHeader(eq("Content-Security-Policy"), anyString());
         verify(response, never()).setHeader("Referrer-Policy", "same-origin");
+    }
+
+    private static final String ORIGIN = "https://author.example.com";
+
+    private OboFixture fixture;
+    private StringWriter body;
+
+    private SlingHttpServletRequest post(String path, String user, Map<String, String> parameters) {
+        SlingHttpServletRequest request = mock(SlingHttpServletRequest.class);
+        ResourceResolver resolver = mock(ResourceResolver.class);
+        when(request.getRequestURI()).thenReturn(path);
+        when(request.getResourceResolver()).thenReturn(resolver);
+        when(resolver.getUserID()).thenReturn(user);
+        parameters.forEach((name, value) -> {
+            when(request.getParameterValues(name)).thenReturn(new String[] {value});
+            when(request.getParameter(name)).thenReturn(value);
+        });
+        return request;
+    }
+
+    private SlingHttpServletResponse response() throws Exception {
+        SlingHttpServletResponse response = mock(SlingHttpServletResponse.class);
+        body = new StringWriter();
+        when(response.getWriter()).thenReturn(new PrintWriter(body));
+        return response;
+    }
+
+    private static String basic(String id, String secret) {
+        return "Basic " + Base64.getEncoder().encodeToString((id + ":" + secret).getBytes(StandardCharsets.UTF_8));
+    }
+
+    private OboService mockedService() {
+        OboService service = mock(OboService.class);
+        when(service.enabled()).thenReturn(true);
+        when(service.origin()).thenReturn(ORIGIN);
+        return service;
+    }
+
+    @Test
+    void consentIsRefusedWhileAnotherUserIsBeingImpersonated() throws Exception {
+        OboService service = mockedService();
+        SlingHttpServletRequest sudoCookie = consentRequest("https://app.example.com/callback");
+        when(sudoCookie.getCookies()).thenReturn(new Cookie[] {new Cookie("sling.sudo", "Ym9i")});
+        SlingHttpServletRequest sudoParameter = consentRequest("https://app.example.com/callback");
+        when(sudoParameter.getParameter("sudo")).thenReturn("bob");
+        SlingHttpServletRequest impersonator = consentRequest("https://app.example.com/callback");
+        when(impersonator.getResourceResolver().getAttribute("user.impersonator")).thenReturn("admin");
+        for (SlingHttpServletRequest request : new SlingHttpServletRequest[] {sudoCookie, sudoParameter, impersonator}) {
+            SlingHttpServletResponse response = response();
+            servlet(service).doGet(request, response);
+            verify(response).setStatus(400);
+            verify(response, never()).setHeader(eq("Content-Security-Policy"), anyString());
+        }
+        verify(service, never()).consent(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void approvalIsRefusedWhileAnotherUserIsBeingImpersonated() throws Exception {
+        OboService service = mockedService();
+        SlingHttpServletRequest request = post("/bin/gradial/obo/authorize", "bob", Map.of("approve", "yes", "form_nonce", "nonce"));
+        when(request.getHeader("Origin")).thenReturn(ORIGIN);
+        when(request.getCookies()).thenReturn(new Cookie[] {new Cookie("sling.sudo", "Ym9i")});
+        SlingHttpServletResponse response = response();
+        servlet(service).doPost(request, response);
+        verify(response).setStatus(400);
+        verify(service, never()).authorize(any(), any(), anyBoolean());
+    }
+
+    @Test
+    void approvalRequiresTheExactTrustedOrigin() throws Exception {
+        for (String origin : new String[] {null, "", "null", "https://evil.example", ORIGIN + "/", "http://author.example.com"}) {
+            OboService service = mockedService();
+            SlingHttpServletRequest request = post("/bin/gradial/obo/authorize", "writer", Map.of("approve", "yes", "form_nonce", "nonce"));
+            when(request.getHeader("Origin")).thenReturn(origin);
+            SlingHttpServletResponse response = response();
+            servlet(service).doPost(request, response);
+            verify(response).setStatus(400);
+            verify(response, never()).setHeader(eq("Location"), anyString());
+            verify(service, never()).authorize(any(), any(), anyBoolean());
+        }
+    }
+
+    @Test
+    void aDelegatedCredentialCannotConsentOrApprove() throws Exception {
+        OboService service = mockedService();
+        SlingHttpServletRequest get = consentRequest("https://app.example.com/callback");
+        when(get.getAuthType()).thenReturn("GradialOBO");
+        SlingHttpServletResponse getResponse = response();
+        servlet(service).doGet(get, getResponse);
+        verify(getResponse).setStatus(400);
+        SlingHttpServletRequest post = post("/bin/gradial/obo/authorize", "writer", Map.of("approve", "yes", "form_nonce", "nonce"));
+        when(post.getHeader("Origin")).thenReturn(ORIGIN);
+        when(post.getAuthType()).thenReturn("GradialOBO");
+        SlingHttpServletResponse postResponse = response();
+        servlet(service).doPost(post, postResponse);
+        verify(postResponse).setStatus(400);
+        verify(service, never()).consent(any(), any(), any(), any(), any());
+        verify(service, never()).authorize(any(), any(), anyBoolean());
+    }
+
+    @Test
+    void tokenAndRevokeRefuseMissingWrongAndDelegatedClientAuthentication() throws Exception {
+        for (String path : new String[] {"/bin/gradial/obo/token", "/bin/gradial/obo/revoke"}) {
+            for (String authorization : new String[] {null, "GradialOBO go_anything", "Bearer abc", basic("gradial", "wrong"), "Basic !!!"}) {
+                OboService service = mockedService();
+                SlingHttpServletRequest request = post(path, "anonymous", Map.of("grant_type", "refresh_token",
+                        "refresh_token", "x", "token", "x"));
+                when(request.getHeader("Authorization")).thenReturn(authorization);
+                SlingHttpServletResponse response = response();
+                servlet(service).doPost(request, response);
+                verify(response).setStatus(401);
+                verify(response).setHeader("WWW-Authenticate", "Basic realm=\"Gradial OBO\"");
+                assertTrue(body.toString().contains("invalid_client"));
+                verify(service, never()).revoke(any());
+                verify(service, never()).refresh(any());
+                verify(service, never()).exchange(any(), any(), any());
+            }
+        }
+    }
+
+    @Test
+    void clientCredentialsInTheBodyAreRefusedWhenTheyConflictWithBasic() throws Exception {
+        OboService service = mockedService();
+        when(service.clientMatches("gradial", "secret")).thenReturn(true);
+        SlingHttpServletRequest request = post("/bin/gradial/obo/token", "anonymous", Map.of("grant_type", "refresh_token",
+                "refresh_token", "x", "client_id", "gradial", "client_secret", "secret"));
+        when(request.getHeader("Authorization")).thenReturn(basic("gradial", "secret"));
+        SlingHttpServletResponse response = response();
+        servlet(service).doPost(request, response);
+        verify(response).setStatus(401);
+        verify(service, never()).refresh(any());
+    }
+
+    @Test
+    void aConsentNonceCannotBeApprovedByAnotherSignedInUser() throws Exception {
+        fixture = new OboFixture();
+        String nonce = fixture.service.consent(OboFixture.USER, OboFixture.CLIENT, OboFixture.REDIRECT,
+                OboService.challenge(OboService.random()), OboFixture.STATE);
+        Map<String, String> form = Map.of("approve", "yes", "form_nonce", nonce);
+        SlingHttpServletRequest intruder = post("/bin/gradial/obo/authorize", "intruder", form);
+        when(intruder.getHeader("Origin")).thenReturn(ORIGIN);
+        SlingHttpServletResponse denied = response();
+        servlet(fixture.service).doPost(intruder, denied);
+        verify(denied).setStatus(400);
+        verify(denied, never()).setHeader(eq("Location"), anyString());
+        SlingHttpServletRequest owner = post("/bin/gradial/obo/authorize", OboFixture.USER, form);
+        when(owner.getHeader("Origin")).thenReturn(ORIGIN);
+        SlingHttpServletResponse approved = response();
+        servlet(fixture.service).doPost(owner, approved);
+        verify(approved).setStatus(303);
+        ArgumentCaptor<String> location = ArgumentCaptor.forClass(String.class);
+        verify(approved).setHeader(eq("Location"), location.capture());
+        assertTrue(location.getValue().startsWith(OboFixture.REDIRECT + "?code=goc_"));
+        assertTrue(location.getValue().endsWith("&state=" + OboFixture.STATE));
+    }
+
+    @Test
+    void administratorsGetNoConsentPageAndNoNonce() throws Exception {
+        fixture = new OboFixture();
+        when(fixture.user.isAdmin()).thenReturn(true);
+        SlingHttpServletRequest request = consentRequest(OboFixture.REDIRECT);
+        when(request.getResourceResolver().getUserID()).thenReturn(OboFixture.USER);
+        when(request.getParameterValues("client_id")).thenReturn(new String[] {OboFixture.CLIENT});
+        when(request.getParameterValues("code_challenge")).thenReturn(new String[] {OboService.challenge(OboService.random())});
+        when(request.getParameterValues("state")).thenReturn(new String[] {OboFixture.STATE});
+        SlingHttpServletResponse response = response();
+        servlet(fixture.service).doGet(request, response);
+        verify(response).setStatus(400);
+        assertFalse(body.toString().contains("form_nonce"));
+        assertEquals(0, OboFixture.records(fixture.storage, OboService.CONSENTS, 2));
+    }
+
+    @Test
+    void theTokenEndpointRejectsCredentialsOfTheWrongTypeAndStillServesTheRightOne() throws Exception {
+        fixture = new OboFixture();
+        String verifier = OboService.random();
+        String nonce = fixture.service.consent(OboFixture.USER, OboFixture.CLIENT, OboFixture.REDIRECT,
+                OboService.challenge(verifier), OboFixture.STATE);
+        String code = fixture.service.authorize(nonce, OboFixture.USER, true).code;
+        OboService.Tokens tokens = fixture.service.exchange(code, OboFixture.REDIRECT, verifier);
+        String auth = basic(OboFixture.CLIENT, OboFixture.SECRET);
+        for (Map<String, String> form : new Map[] {
+                Map.of("grant_type", "refresh_token", "refresh_token", tokens.access),
+                Map.of("grant_type", "authorization_code", "code", tokens.access, "redirect_uri", OboFixture.REDIRECT, "code_verifier", verifier),
+                Map.of("grant_type", "authorization_code", "code", tokens.refresh, "redirect_uri", OboFixture.REDIRECT, "code_verifier", verifier),
+                Map.of("grant_type", "authorization_code", "code", code, "redirect_uri", OboFixture.REDIRECT, "code_verifier", verifier)}) {
+            SlingHttpServletRequest request = post("/bin/gradial/obo/token", "anonymous", form);
+            when(request.getHeader("Authorization")).thenReturn(auth);
+            SlingHttpServletResponse response = response();
+            servlet(fixture.service).doPost(request, response);
+            verify(response).setStatus(400);
+            assertTrue(body.toString().contains("invalid_grant"));
+        }
+    }
+
+    @Test
+    void theTokenEndpointRefreshesWithTheRightCredential() throws Exception {
+        fixture = new OboFixture();
+        String verifier = OboService.random();
+        String nonce = fixture.service.consent(OboFixture.USER, OboFixture.CLIENT, OboFixture.REDIRECT,
+                OboService.challenge(verifier), OboFixture.STATE);
+        OboService.Tokens tokens = fixture.service.exchange(
+                fixture.service.authorize(nonce, OboFixture.USER, true).code, OboFixture.REDIRECT, verifier);
+        SlingHttpServletRequest request = post("/bin/gradial/obo/token", "anonymous",
+                Map.of("grant_type", "refresh_token", "refresh_token", tokens.refresh));
+        when(request.getHeader("Authorization")).thenReturn(basic(OboFixture.CLIENT, OboFixture.SECRET));
+        SlingHttpServletResponse response = response();
+        servlet(fixture.service).doPost(request, response);
+        verify(response, never()).setStatus(400);
+        assertTrue(body.toString().contains("\"token_type\":\"GradialOBO\""));
     }
 }

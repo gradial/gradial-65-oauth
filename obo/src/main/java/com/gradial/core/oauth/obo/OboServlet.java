@@ -23,6 +23,8 @@ public class OboServlet extends SlingAllMethodsServlet {
     private static final long serialVersionUID = 1L;
     @Reference
     private OboService service;
+    @Reference
+    private OboImpersonationGuard guard;
 
     @Override
     protected void doGet(SlingHttpServletRequest request, SlingHttpServletResponse response) throws IOException {
@@ -89,9 +91,14 @@ public class OboServlet extends SlingAllMethodsServlet {
         catch (RepositoryException e) { error(response, 503, "temporarily_unavailable"); }
     }
 
-    private static String browserUser(SlingHttpServletRequest request) throws RepositoryException {
+    /**
+     * The person consenting must be the person who signed in. A delegated credential or an AEM
+     * "Impersonate as" session would let someone approve a grant the named user never saw.
+     */
+    private String browserUser(SlingHttpServletRequest request) throws RepositoryException {
         String user = request.getResourceResolver().getUserID();
-        if (user == null || "anonymous".equals(user) || OboService.SCHEME.equals(request.getAuthType())) throw OboService.invalid();
+        if (user == null || "anonymous".equals(user) || OboService.SCHEME.equals(request.getAuthType())
+                || guard.impersonated(request)) throw OboService.invalid();
         return user;
     }
 

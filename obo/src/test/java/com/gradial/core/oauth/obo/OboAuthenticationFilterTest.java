@@ -18,6 +18,9 @@ class OboAuthenticationFilterTest {
         Field field = OboAuthenticationFilter.class.getDeclaredField("service");
         field.setAccessible(true);
         field.set(filter, service);
+        Field guard = OboAuthenticationFilter.class.getDeclaredField("guard");
+        guard.setAccessible(true);
+        guard.set(filter, new OboImpersonationGuard());
         return filter;
     }
 

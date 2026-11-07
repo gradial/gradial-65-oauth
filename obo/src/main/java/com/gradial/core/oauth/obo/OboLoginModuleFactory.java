@@ -27,6 +27,7 @@ import org.apache.jackrabbit.oak.spi.security.SecurityProvider;
 import org.apache.jackrabbit.oak.spi.security.authentication.SystemSubject;
 import org.apache.jackrabbit.oak.spi.security.authentication.callback.CredentialsCallback;
 import org.apache.jackrabbit.oak.spi.security.authentication.callback.RepositoryCallback;
+import org.apache.jackrabbit.oak.spi.security.principal.AdminPrincipal;
 import org.apache.jackrabbit.oak.spi.security.principal.PrincipalConfiguration;
 import org.apache.jackrabbit.oak.spi.security.authentication.AuthInfoImpl;
 import org.osgi.service.component.annotations.Component;
@@ -105,12 +106,23 @@ public class OboLoginModuleFactory implements LoginModuleFactory {
                 userId = service.authenticate(credentials.token());
                 principals = new HashSet<>(getPrincipals(userId));
                 if (principals.isEmpty()) throw new LoginException("Delegated user has no principals");
+                // Authoritative check: it runs on every request, so it also covers users who became administrators after consent.
+                if (!service.allowAdministrators() && administrative(principals)) {
+                    throw new LoginException("Administrative accounts cannot use delegation");
+                }
                 authenticated = true;
                 return true;
             } catch (RepositoryException e) {
                 // Do not attach the exception: repository errors can contain credential-bearing paths.
                 throw new LoginException("Invalid or expired Gradial delegation");
             }
+        }
+
+        private static boolean administrative(Set<Principal> principals) {
+            for (Principal principal : principals) {
+                if (principal instanceof AdminPrincipal || "administrators".equals(principal.getName())) return true;
+            }
+            return false;
         }
 
         @Override

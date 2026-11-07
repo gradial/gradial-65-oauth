@@ -14,4 +14,7 @@ public @interface OboConfiguration {
     String publicOrigin();
     int accessTokenSeconds() default 300;
     int grantSeconds() default 2592000;
+    @AttributeDefinition(description = "Let `admin` and members of `administrators` connect. Delegation then grants them "
+            + "full administrative access, so leave this off unless a deployment explicitly needs it")
+    boolean allowAdministrators() default false;
 }

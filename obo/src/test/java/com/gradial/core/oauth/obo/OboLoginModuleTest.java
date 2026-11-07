@@ -89,4 +89,45 @@ class OboLoginModuleTest {
         assertTrue(subject.getPublicCredentials().isEmpty());
         assertFalse(module.commit());
     }
+
+    private static OboLoginModuleFactory.DelegationLoginModule moduleFor(OboService service, Principal... principals) throws Exception {
+        ContentRepository repository = mock(ContentRepository.class);
+        ContentSession session = mock(ContentSession.class);
+        Root root = mock(Root.class);
+        when(repository.login(null, "default")).thenReturn(session);
+        when(session.getLatestRoot()).thenReturn(root);
+        SecurityProvider security = mock(SecurityProvider.class);
+        PrincipalConfiguration configuration = mock(PrincipalConfiguration.class);
+        PrincipalProvider provider = mock(PrincipalProvider.class);
+        when(security.getConfiguration(PrincipalConfiguration.class)).thenReturn(configuration);
+        when(configuration.getPrincipalProvider(root, NamePathMapper.DEFAULT)).thenReturn(provider);
+        doReturn(Set.of(principals)).when(provider).getPrincipals("writer");
+        OboLoginModuleFactory.DelegationLoginModule module = new OboLoginModuleFactory.DelegationLoginModule(service);
+        module.initialize(new Subject(), values -> {
+            for (var callback : values) {
+                if (callback instanceof CredentialsCallback) ((CredentialsCallback) callback).setCredentials(new OboCredentials("token"));
+                else if (callback instanceof RepositoryCallback) {
+                    RepositoryCallback target = (RepositoryCallback) callback;
+                    target.setContentRepository(repository);
+                    target.setSecurityProvider(security);
+                    target.setWorkspaceName("default");
+                } else throw new UnsupportedCallbackException(callback);
+            }
+        }, Collections.emptyMap(), Collections.emptyMap());
+        return module;
+    }
+
+    @Test
+    void administrativePrincipalsAreRefusedUnlessTheDeploymentOptsIn() throws Exception {
+        OboService service = mock(OboService.class);
+        when(service.authenticate("token")).thenReturn("writer");
+        Principal writer = () -> "writer";
+        for (Principal administrative : new Principal[] {
+                new org.apache.jackrabbit.oak.spi.security.principal.AdminPrincipal() { public String getName() { return "admin"; } },
+                (Principal) () -> "administrators"}) {
+            assertThrows(LoginException.class, moduleFor(service, writer, administrative)::login);
+        }
+        when(service.allowAdministrators()).thenReturn(true);
+        assertTrue(moduleFor(service, writer, () -> "administrators").login());
+    }
 }

@@ -11,7 +11,6 @@ import javax.servlet.ServletRequest;
 import javax.servlet.ServletResponse;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
-import javax.servlet.http.Cookie;
 
 import org.apache.sling.api.SlingHttpServletRequest;
 import org.osgi.service.component.annotations.Component;
@@ -24,6 +23,8 @@ import org.osgi.service.component.annotations.ReferencePolicy;
 public class OboAuthenticationFilter implements Filter {
     @Reference(cardinality = ReferenceCardinality.OPTIONAL, policy = ReferencePolicy.DYNAMIC)
     private volatile OboService service;
+    @Reference
+    private OboImpersonationGuard guard;
 
     @Override
     public void doFilter(ServletRequest request, ServletResponse response, FilterChain chain)
@@ -41,7 +42,7 @@ public class OboAuthenticationFilter implements Filter {
         try {
             OboService current = service;
             if (current == null || authorization.length() <= 11 || !(request instanceof SlingHttpServletRequest)
-                    || hasImpersonation((HttpServletRequest) request)) {
+                    || guard.impersonated((HttpServletRequest) request)) {
                 refuse(httpResponse, HttpServletResponse.SC_FORBIDDEN);
                 return;
             }
@@ -60,17 +61,6 @@ public class OboAuthenticationFilter implements Filter {
         } catch (RepositoryException e) {
             refuse(httpResponse, HttpServletResponse.SC_SERVICE_UNAVAILABLE);
         }
-    }
-
-    private static boolean hasImpersonation(HttpServletRequest request) {
-        if (request.getParameter("sudo") != null || request.getParameter("sling.sudo") != null) return true;
-        Cookie[] cookies = request.getCookies();
-        if (cookies != null) {
-            for (Cookie cookie : cookies) {
-                if ("sling.sudo".equals(cookie.getName()) && !cookie.getValue().isEmpty()) return true;
-            }
-        }
-        return false;
     }
 
     private static void refuse(HttpServletResponse response, int status) throws IOException {
