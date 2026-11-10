@@ -2,7 +2,6 @@ package com.gradial.core.oauth.obo;
 
 import java.io.IOException;
 
-import javax.jcr.RepositoryException;
 import javax.servlet.Filter;
 import javax.servlet.FilterChain;
 import javax.servlet.FilterConfig;
@@ -18,6 +17,11 @@ import org.osgi.service.component.annotations.Reference;
 import org.osgi.service.component.annotations.ReferenceCardinality;
 import org.osgi.service.component.annotations.ReferencePolicy;
 
+/**
+ * Last line for delegated Sling requests: the session must be the one the delegation login module
+ * opened for this request's credential (a cookie handler or a sudo switch cannot substitute another),
+ * and the resolved resource path must not be a denied surface. No repository read.
+ */
 @Component(service = Filter.class,
         property = {"sling.filter.scope=REQUEST", "service.ranking:Integer=10000"})
 public class OboAuthenticationFilter implements Filter {
@@ -39,32 +43,31 @@ public class OboAuthenticationFilter implements Filter {
             return;
         }
         HttpServletResponse httpResponse = (HttpServletResponse) response;
-        try {
-            OboService current = service;
-            if (current == null || authorization.length() <= 11 || !(request instanceof SlingHttpServletRequest)
-                    || guard.impersonated((HttpServletRequest) request)) {
-                refuse(httpResponse, HttpServletResponse.SC_FORBIDDEN);
-                return;
-            }
-            String userId = current.authenticate(authorization.substring(11));
-            SlingHttpServletRequest slingRequest = (SlingHttpServletRequest) request;
-            // Authentication metadata is not proof: cookie handlers can select another actual session.
-            if (!userId.equals(slingRequest.getResourceResolver().getUserID())
-                    || !userId.equals(slingRequest.getRemoteUser())) {
-                refuse(httpResponse, HttpServletResponse.SC_FORBIDDEN);
-                return;
-            }
-            httpResponse.setHeader("Cache-Control", "no-store");
-            chain.doFilter(request, response);
-        } catch (OboService.InvalidDelegationException e) {
-            refuse(httpResponse, HttpServletResponse.SC_FORBIDDEN);
-        } catch (RepositoryException e) {
-            refuse(httpResponse, HttpServletResponse.SC_SERVICE_UNAVAILABLE);
+        OboService current = service;
+        if (current == null || !(request instanceof SlingHttpServletRequest) || guard.impersonated((HttpServletRequest) request)) {
+            refuse(httpResponse);
+            return;
         }
+        SlingHttpServletRequest slingRequest = (SlingHttpServletRequest) request;
+        if (!OboAuthenticationHandler.openedBy(slingRequest.getResourceResolver(), authorization)
+                || slingRequest.getRemoteUser() == null
+                || !slingRequest.getRemoteUser().equals(slingRequest.getResourceResolver().getUserID())) {
+            refuse(httpResponse);
+            return;
+        }
+        String resourcePath = slingRequest.getRequestPathInfo().getResourcePath();
+        if (resourcePath != null && current.paths().refuses(slingRequest.getMethod(), resourcePath)) {
+            OboAudit.event("path_refused", slingRequest.getRemoteUser(), null,
+                    "method=" + slingRequest.getMethod() + " path=" + resourcePath);
+            refuse(httpResponse);
+            return;
+        }
+        httpResponse.setHeader("Cache-Control", "no-store");
+        chain.doFilter(request, response);
     }
 
-    private static void refuse(HttpServletResponse response, int status) throws IOException {
-        response.setStatus(status);
+    private static void refuse(HttpServletResponse response) throws IOException {
+        response.setStatus(HttpServletResponse.SC_FORBIDDEN);
         response.setHeader("Cache-Control", "no-store");
         response.flushBuffer();
     }

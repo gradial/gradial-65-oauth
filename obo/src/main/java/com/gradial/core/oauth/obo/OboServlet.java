@@ -1,8 +1,8 @@
 package com.gradial.core.oauth.obo;
 
 import java.io.IOException;
+import java.io.UnsupportedEncodingException;
 import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
 
 import javax.jcr.RepositoryException;
 import javax.servlet.Servlet;
@@ -29,7 +29,7 @@ public class OboServlet extends SlingAllMethodsServlet {
     @Override
     protected void doGet(SlingHttpServletRequest request, SlingHttpServletResponse response) throws IOException {
         headers(response);
-        if (!request.getRequestURI().equals("/bin/gradial/obo/authorize")) { response.setStatus(405); return; }
+        if (!"/bin/gradial/obo/authorize".equals(OboPaths.normalize(request.getRequestURI()))) { response.setStatus(405); return; }
         try {
             String user = browserUser(request);
             if (!"code".equals(parameter(request, "response_type"))
@@ -55,9 +55,9 @@ public class OboServlet extends SlingAllMethodsServlet {
     protected void doPost(SlingHttpServletRequest request, SlingHttpServletResponse response) throws IOException {
         headers(response);
         if (!service.enabled()) { error(response, 503, "temporarily_unavailable"); return; }
-        String path = request.getRequestURI();
+        String path = OboPaths.normalize(request.getRequestURI());
         try {
-            if (path.equals("/bin/gradial/obo/authorize")) {
+            if ("/bin/gradial/obo/authorize".equals(path)) {
                 String user = browserUser(request);
                 if (!service.origin().equals(request.getHeader("Origin"))) throw OboService.invalid();
                 String approval = parameter(request, "approve");
@@ -71,12 +71,12 @@ public class OboServlet extends SlingAllMethodsServlet {
                 return;
             }
             if (!OboClientAuthentication.accepts(request, service)) { response.setHeader("WWW-Authenticate", "Basic realm=\"Gradial OBO\""); error(response, 401, "invalid_client"); return; }
-            if (path.equals("/bin/gradial/obo/revoke")) {
+            if (OboAuthenticationHandler.REVOKE_PATH.equals(path)) {
                 service.revoke(parameter(request, "token"));
                 response.setStatus(200);
                 return;
             }
-            if (!path.equals("/bin/gradial/obo/token")) { response.setStatus(404); return; }
+            if (!OboAuthenticationHandler.TOKEN_PATH.equals(path)) { response.setStatus(404); return; }
             String grantType = parameter(request, "grant_type");
             OboService.Tokens tokens;
             if ("authorization_code".equals(grantType)) {
@@ -97,8 +97,15 @@ public class OboServlet extends SlingAllMethodsServlet {
      */
     private String browserUser(SlingHttpServletRequest request) throws RepositoryException {
         String user = request.getResourceResolver().getUserID();
-        if (user == null || "anonymous".equals(user) || OboService.SCHEME.equals(request.getAuthType())
-                || guard.impersonated(request)) throw OboService.invalid();
+        if (user == null || "anonymous".equals(user)) throw OboService.invalid();
+        if (OboService.SCHEME.equals(request.getAuthType())) {
+            OboAudit.event("consent_refused", user, null, "reason=delegated_session");
+            throw OboService.invalid();
+        }
+        if (guard.impersonated(request)) {
+            OboAudit.event("consent_refused", user, null, "reason=impersonation");
+            throw OboService.invalid();
+        }
         return user;
     }
 
@@ -107,7 +114,10 @@ public class OboServlet extends SlingAllMethodsServlet {
         if (values == null || values.length != 1 || values[0].length() > 2048) throw new IllegalArgumentException("Invalid parameter");
         return values[0];
     }
-    private static String encode(String value) { return URLEncoder.encode(value, StandardCharsets.UTF_8); }
+    private static String encode(String value) {
+        try { return URLEncoder.encode(value, "UTF-8"); }
+        catch (UnsupportedEncodingException e) { throw new IllegalStateException(e); }
+    }
     // Colors mirror the Gradial web app theme tokens (light and dark) so this AEM-hosted page matches the app.
     private static final String CONSENT_STYLE = ":root{color-scheme:light dark;--bg:#fff;--fg:#0a0a0a;--muted:#737373;--card:#fff;"
             + "--border:#e5e5e5;--input:#e5e5e5;--primary:#2b7fff;--primary-fg:#fafafa;--secondary:#f5f5f5;--secondary-fg:#171717;"

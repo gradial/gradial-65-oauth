@@ -82,13 +82,19 @@ final class OboFixture {
 
     static String idOf(String token) { return token.substring(4, token.indexOf('.')); }
 
+    /** The login module's per-request validation, over the fixture repository. */
+    String authenticate(String access) throws Exception {
+        Session session = storage.login();
+        try { return service.validateAccess(OboService.records(session), users, access); } finally { session.logout(); }
+    }
+
     static int count(Node node) throws Exception {
         int total = 0;
         for (javax.jcr.NodeIterator it = node.getNodes(); it.hasNext();) { it.nextNode(); total++; }
         return total;
     }
 
-    /** Number of leaf records under a bucketed tree (depth 1 for grants, 2 for per-user consent folders). */
+    /** Number of leaf records under a bucketed tree (records sit at depth 2: bucket, user folder, record). */
     static int records(Repository storage, String root, int depth) throws Exception {
         Session session = storage.login();
         try { return records(session.getNode(root), depth); } finally { session.logout(); }

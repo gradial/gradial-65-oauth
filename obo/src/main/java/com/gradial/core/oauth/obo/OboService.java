@@ -16,10 +16,10 @@ import java.util.List;
 import java.util.Set;
 import java.util.regex.Pattern;
 
-import javax.jcr.Node;
-import javax.jcr.NodeIterator;
 import javax.jcr.InvalidItemStateException;
 import javax.jcr.ItemExistsException;
+import javax.jcr.Node;
+import javax.jcr.NodeIterator;
 import javax.jcr.RepositoryException;
 import javax.jcr.Session;
 
@@ -27,6 +27,7 @@ import org.apache.jackrabbit.api.JackrabbitSession;
 import org.apache.jackrabbit.api.security.user.Authorizable;
 import org.apache.jackrabbit.api.security.user.Group;
 import org.apache.jackrabbit.api.security.user.User;
+import org.apache.jackrabbit.api.security.user.UserManager;
 import org.apache.sling.jcr.api.SlingRepository;
 import org.osgi.service.component.annotations.Activate;
 import org.osgi.service.component.annotations.Component;
@@ -36,59 +37,74 @@ import org.osgi.service.metatype.annotations.Designate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+/**
+ * Authorization-code server and grant store for user-scoped delegation.
+ *
+ * <p>Store layout: {@code <root>/<2 hex>/<16 hex user key>/<record id>}. Every record id starts with the
+ * owner's user key, so a token locates its record directly and each user's records share one small
+ * folder, which bounds them per user. Parents are non-orderable.
+ */
 @Component(service = {OboService.class, Runnable.class}, configurationPolicy = ConfigurationPolicy.REQUIRE,
         property = {"scheduler.period:Long=600", "scheduler.concurrent:Boolean=false", "scheduler.runOn=LEADER"})
 @Designate(ocd = OboConfiguration.class)
 public class OboService implements Runnable {
-    static final String ROOT = "/var/gradial/obo/grants";
-    static final String CONSENTS = "/var/gradial/obo/consents";
-    /** Non-orderable, so large child sets stay cheap. Never use nt:unstructured for unbounded children. */
+    static final String STORE = "/var/gradial/obo";
+    static final String ROOT = STORE + "/grants";
+    static final String CONSENTS = STORE + "/consents";
+    /** Non-orderable, so child sets stay cheap. Never use nt:unstructured for record parents. */
     static final String CONTAINER = "oak:Unstructured";
     static final int MAX_PENDING_CONSENTS = 5;
+    static final int MAX_GRANTS_PER_USER = 10;
+    /** Consumed refresh credentials remembered per grant for replay detection, newest last. */
+    static final int REFRESH_HISTORY = 16;
+    static final int MAX_ROTATIONS = 10000;
     private static final String ADMINISTRATORS = "administrators";
     private static final long CLEANUP_BUDGET_MS = 60_000;
+    private static final int SAVE_BATCH = 200;
     private static final int BUCKETS = 256;
     static final String SCHEME = "GradialOBO";
-    private static final Pattern TOKEN = Pattern.compile("go[acnr]_[A-Za-z0-9_-]{43}\\.[A-Za-z0-9_-]{43}");
+    private static final Pattern TOKEN = Pattern.compile("go[acnr]_[0-9a-f]{16}[A-Za-z0-9_-]{27}\\.[A-Za-z0-9_-]{43}");
     private static final Pattern VERIFIER = Pattern.compile("[A-Za-z0-9._~-]{43,128}");
     private static final SecureRandom RANDOM = new SecureRandom();
     private static final Logger LOG = LoggerFactory.getLogger(OboService.class);
+
     @Reference
     private SlingRepository repository;
     private OboConfiguration config;
     private Set<String> redirects;
     private String configurationHash;
+    private OboPaths paths;
     private int cleanupCursor;
 
     @Activate
     protected void activate(OboConfiguration config) {
+        this.config = config;
         if (!config.enabled()) {
-            this.config = config;
             redirects = Collections.emptySet();
             configurationHash = "disabled";
+            paths = OboPaths.of(config.deniedPaths());
             return;
         }
-        if (config.enabled()) {
-            if (config.clientId().isEmpty() || !config.clientSecretSha256().matches("[a-f0-9]{64}")
-                    || config.redirectUris().length == 0 || config.accessTokenSeconds() < 30
-                    || config.accessTokenSeconds() > 3600 || config.grantSeconds() < config.accessTokenSeconds()
-                    || config.grantSeconds() > 2592000) {
-                throw new IllegalArgumentException("Invalid user-delegation configuration");
-            }
-            URI origin = checkedUri(config.publicOrigin());
-            if (origin.getRawQuery() != null || origin.getRawFragment() != null
-                    || (origin.getRawPath() != null && !origin.getRawPath().isEmpty())) {
-                throw new IllegalArgumentException("publicOrigin must be an origin without a path");
-            }
-            for (String redirect : config.redirectUris()) {
-                checkedUri(redirect);
-            }
-        }
-        this.config = config;
+        require(!config.clientId().isEmpty(), "clientId is required");
+        require(config.clientSecretSha256().matches("[a-f0-9]{64}"), "clientSecretSha256 must be 64 lowercase hex characters");
+        require(config.redirectUris().length > 0, "redirectUris must list at least one callback");
+        require(config.accessTokenSeconds() >= 30 && config.accessTokenSeconds() <= 3600, "accessTokenSeconds must be 30-3600");
+        require(config.grantSeconds() >= config.accessTokenSeconds() && config.grantSeconds() <= 2592000,
+                "grantSeconds must be between accessTokenSeconds and 2592000");
+        URI origin = checkedUri(config.publicOrigin());
+        require(origin.getRawQuery() == null && origin.getRawFragment() == null
+                && (origin.getRawPath() == null || origin.getRawPath().isEmpty()), "publicOrigin must be an origin without a path");
+        for (String redirect : config.redirectUris()) checkedUri(redirect);
         redirects = Collections.unmodifiableSet(new HashSet<>(Arrays.asList(config.redirectUris())));
-        configurationHash = hash(config.clientId() + "\n" + config.clientSecretSha256() + "\n"
-                + config.publicOrigin() + "\n" + String.join("\n", config.redirectUris()) + "\n"
-                + config.accessTokenSeconds() + "\n" + config.grantSeconds());
+        paths = OboPaths.of(config.deniedPaths());
+        // Only the client identity binds grants. Callbacks, origin and lifetimes can change without revoking
+        // everyone; rotating the client secret deliberately ends every grant.
+        configurationHash = hash(config.clientId() + "\n" + config.clientSecretSha256());
+        OboAudit.event("service_enabled", null, null, "client=" + config.clientId());
+    }
+
+    private static void require(boolean condition, String message) {
+        if (!condition) throw new IllegalArgumentException("Invalid user-delegation configuration: " + message);
     }
 
     static URI checkedUri(String value) {
@@ -105,6 +121,7 @@ public class OboService implements Runnable {
     boolean enabled() { return config.enabled(); }
     boolean allowAdministrators() { return config.allowAdministrators(); }
     String origin() { return config.publicOrigin(); }
+    OboPaths paths() { return paths; }
 
     boolean clientMatches(String client, String secret) {
         return enabled() && config.clientId().equals(client) && secret != null && secret.length() <= 512
@@ -120,12 +137,13 @@ public class OboService implements Runnable {
         }
         return retrying(session -> {
             requireUser(session, userId);
-            String nonce = token("gon", random());
-            Node folder = child(child(session.getNode(CONSENTS), bucket(userId)), hash(userId));
-            makeRoom(folder);
-            Node consent = folder.addNode(id(nonce), CONTAINER);
+            String id = recordId(userId);
+            String nonce = token("gon", id);
+            Node folder = folder(session, CONSENTS, id);
+            prune(folder, MAX_PENDING_CONSENTS, null);
+            Node consent = folder.addNode(id, CONTAINER);
             consent.setProperty("userId", userId);
-            consent.setProperty("userIdentifier", userIdentifier(session, userId));
+            consent.setProperty("userIdentifier", userIdentifier(records(session), users(session), userId));
             consent.setProperty("configurationHash", configurationHash);
             consent.setProperty("redirect", redirect);
             consent.setProperty("challenge", challenge);
@@ -138,43 +156,36 @@ public class OboService implements Runnable {
         });
     }
 
-    /** Keeps at most MAX_PENDING_CONSENTS - 1 live consents so the new one makes MAX; the oldest go first. */
-    private static void makeRoom(Node folder) throws RepositoryException {
-        List<Node> live = new ArrayList<>();
-        NodeIterator nodes = folder.getNodes();
-        while (nodes.hasNext()) {
-            Node node = nodes.nextNode();
-            if (expired(node)) node.remove(); else live.add(node);
-        }
-        live.sort(Comparator.comparingLong(OboService::created));
-        for (int i = 0; live.size() - i >= MAX_PENDING_CONSENTS; i++) live.get(i).remove();
-    }
-
     Authorization authorize(String nonce, String userId, boolean approved) throws RepositoryException {
         return retrying(session -> {
             requireToken(nonce, "gon");
+            String id = id(nonce);
             // Consents live under the signed-in user's own folder, so another user's nonce is simply not found.
-            String path = CONSENTS + "/" + bucket(userId) + "/" + hash(userId) + "/" + id(nonce);
-            Node consent = live(session, path);
+            if (!id.startsWith(userKey(userId))) throw invalid();
+            Node consent = live(session, path(CONSENTS, id));
             if (!userId.equals(string(consent, "userId")) || !matches(consent, "consentHash", nonce)) throw invalid();
             requireGrantUser(session, consent);
             String redirect = string(consent, "redirect");
             String state = string(consent, "state");
             String code = null;
             if (approved) {
-                code = token("goc", id(nonce));
-                Node grant = child(session.getNode(ROOT), bucket(id(nonce))).addNode(id(nonce), CONTAINER);
+                code = token("goc", id);
+                Node folder = folder(session, ROOT, id);
+                prune(folder, MAX_GRANTS_PER_USER, userId);
+                Node grant = folder.addNode(id, CONTAINER);
                 grant.setProperty("userId", userId);
                 grant.setProperty("userIdentifier", string(consent, "userIdentifier"));
                 grant.setProperty("configurationHash", configurationHash);
                 grant.setProperty("redirect", redirect);
                 grant.setProperty("challenge", string(consent, "challenge"));
                 grant.setProperty("codeHash", hash(code));
+                grant.setProperty("created", now());
                 grant.setProperty("expires", now() + 60000);
                 grant.setProperty("revision", random());
             }
             consent.remove();
             session.save();
+            OboAudit.event(approved ? "consent_approved" : "consent_denied", userId, approved ? id : null, null);
             return new Authorization(redirect, state, code);
         });
     }
@@ -186,11 +197,7 @@ public class OboService implements Runnable {
             Node grant = grant(session, code, "goc");
             if (!matches(grant, "codeHash", code)) {
                 // RFC 6749 4.1.2: a replayed code revokes what it already produced.
-                if (matches(grant, "usedCodeHash", code)) {
-                    grant.setProperty("revoked", true);
-                    grant.setProperty("revision", random());
-                    session.save();
-                }
+                if (matches(grant, "usedCodeHash", code)) revokeFamily(session, grant, "code_replay");
                 throw invalid();
             }
             if (!string(grant, "redirect").equals(redirect)
@@ -201,6 +208,7 @@ public class OboService implements Runnable {
             grant.setProperty("expires", now() + config.grantSeconds() * 1000L);
             Tokens tokens = rotate(grant);
             session.save();
+            OboAudit.event("grant_issued", string(grant, "userId"), grant.getName(), null);
             return tokens;
         } finally { session.logout(); }
     }
@@ -210,43 +218,24 @@ public class OboService implements Runnable {
         try {
             Node grant = grant(session, refresh, "gor");
             if (!matches(grant, "refreshHash", refresh)) {
-                if (grant.hasNode("used/" + hash(refresh))) {
-                    grant.setProperty("revoked", true);
-                    grant.setProperty("revision", random());
-                    session.save();
-                }
+                if (consumed(grant, refresh)) revokeFamily(session, grant, "refresh_replay");
                 throw invalid();
             }
             requireGrantUser(session, grant);
-            Node used = grant.hasNode("used") ? grant.getNode("used") : grant.addNode("used", CONTAINER);
             long rotations = grant.hasProperty("rotations") ? grant.getProperty("rotations").getLong() : 0;
-            if (rotations >= 10000) throw invalid();
+            if (rotations >= MAX_ROTATIONS) throw invalid();
             grant.setProperty("rotations", rotations + 1);
-            used.addNode(hash(refresh), CONTAINER);
+            grant.setProperty("usedRefreshHashes", remember(grant, hash(refresh)));
             Tokens tokens = rotate(grant);
             session.save();
+            OboAudit.debug("grant_refreshed", string(grant, "userId"), grant.getName());
             return tokens;
         } catch (InvalidItemStateException e) {
             // A concurrent rotation must not let a consumed refresh credential remain reusable.
             session.refresh(false);
             Node grant = grant(session, refresh, "gor");
-            if (grant.hasNode("used/" + hash(refresh))) {
-                grant.setProperty("revoked", true);
-                grant.setProperty("revision", random());
-                session.save();
-            }
+            if (consumed(grant, refresh)) revokeFamily(session, grant, "refresh_race");
             throw invalid();
-        } finally { session.logout(); }
-    }
-
-    public String authenticate(String access) throws RepositoryException {
-        Session session = session();
-        try {
-            Node grant = grant(session, access, "goa");
-            if (!matches(grant, "accessHash", access) || grant.getProperty("accessExpires").getLong() <= now()) throw invalid();
-            String userId = string(grant, "userId");
-            requireGrantUser(session, grant);
-            return userId;
         } finally { session.logout(); }
     }
 
@@ -254,17 +243,65 @@ public class OboService implements Runnable {
         if (token == null || !TOKEN.matcher(token).matches()) return;
         Session session = session();
         try {
-            String path = grantPath(id(token));
+            String path = path(ROOT, id(token));
             if (!session.nodeExists(path)) return;
             Node grant = session.getNode(path);
             if (!configurationHash.equals(string(grant, "configurationHash"))) return;
-            if (matches(grant, "accessHash", token) || matches(grant, "refreshHash", token)
-                    || grant.hasNode("used/" + hash(token))) {
-                grant.setProperty("revoked", true);
-                grant.setProperty("revision", random());
-                session.save();
+            if (matches(grant, "accessHash", token) || matches(grant, "refreshHash", token) || consumed(grant, token)) {
+                revokeFamily(session, grant, "disconnect");
             }
         } finally { session.logout(); }
+    }
+
+    /**
+     * The per-request check, run once by the login module on its own system root. Returns the user whose
+     * principals the request gets. Group membership and administrator status are checked there, on the
+     * full principal set.
+     */
+    String validateAccess(Records records, UserManager users, String access) throws RepositoryException {
+        requireToken(access, "goa");
+        Record grant = records.get(path(ROOT, id(access)));
+        long now = now();
+        if (!enabled() || grant == null || !configurationHash.equals(grant.string("configurationHash"))
+                || grant.flag("revoked") || expired(grant.number("expires", 0), grant.number("created", -1), now)
+                || !equal(nullToEmpty(grant.string("accessHash")), hash(access))
+                || grant.number("accessExpires", 0) <= now) throw invalid();
+        String userId = grant.string("userId");
+        if (userId == null || !id(access).startsWith(userKey(userId))) throw invalid();
+        if (!nullToEmpty(grant.string("userIdentifier")).equals(userIdentifier(records, users, userId))) throw invalid();
+        return userId;
+    }
+
+    private boolean expired(long expires, long created, long now) {
+        // Lowering grantSeconds shortens live grants; raising it never extends one past its stored expiry.
+        return expires <= now || (created > 0 && created + config.grantSeconds() * 1000L <= now);
+    }
+
+    private void revokeFamily(Session session, Node grant, String reason) throws RepositoryException {
+        grant.setProperty("revoked", true);
+        grant.setProperty("revision", random());
+        session.save();
+        OboAudit.event("grant_revoked", string(grant, "userId"), grant.getName(), "reason=" + reason);
+    }
+
+    private static boolean consumed(Node grant, String token) throws RepositoryException {
+        if (!grant.hasProperty("usedRefreshHashes")) return false;
+        String expected = hash(token);
+        boolean found = false;
+        for (javax.jcr.Value value : grant.getProperty("usedRefreshHashes").getValues()) {
+            found |= equal(value.getString(), expected);
+        }
+        return found;
+    }
+
+    private static String[] remember(Node grant, String used) throws RepositoryException {
+        List<String> history = new ArrayList<>();
+        if (grant.hasProperty("usedRefreshHashes")) {
+            for (javax.jcr.Value value : grant.getProperty("usedRefreshHashes").getValues()) history.add(value.getString());
+        }
+        history.add(used);
+        List<String> kept = history.subList(Math.max(0, history.size() - REFRESH_HISTORY), history.size());
+        return kept.toArray(new String[0]);
     }
 
     private Tokens rotate(Node grant) throws RepositoryException {
@@ -281,7 +318,7 @@ public class OboService implements Runnable {
 
     private Node grant(Session session, String token, String prefix) throws RepositoryException {
         requireToken(token, prefix);
-        Node grant = live(session, grantPath(id(token)));
+        Node grant = live(session, path(ROOT, id(token)));
         if (grant.hasProperty("revoked") && grant.getProperty("revoked").getBoolean()) throw invalid();
         return grant;
     }
@@ -290,16 +327,39 @@ public class OboService implements Runnable {
     private Node live(Session session, String path) throws RepositoryException {
         if (!enabled() || !session.nodeExists(path)) throw invalid();
         Node node = session.getNode(path);
-        if (!configurationHash.equals(string(node, "configurationHash")) || expired(node)) throw invalid();
+        if (!configurationHash.equals(string(node, "configurationHash"))
+                || expired(number(node, "expires"), node.hasProperty("created") ? number(node, "created") : -1, now())) {
+            throw invalid();
+        }
         return node;
+    }
+
+    /**
+     * Keeps at most {@code max - 1} live records so the new one makes {@code max}; the oldest go first.
+     * Expired and revoked records are dropped on the way.
+     */
+    private void prune(Node folder, int max, String userId) throws RepositoryException {
+        List<Node> live = new ArrayList<>();
+        NodeIterator nodes = folder.getNodes();
+        long now = now();
+        while (nodes.hasNext()) {
+            Node node = nodes.nextNode();
+            if (removable(node, now)) node.remove(); else live.add(node);
+        }
+        live.sort(Comparator.comparingLong(OboService::created));
+        for (int i = 0; live.size() - i >= max; i++) {
+            if (userId != null) OboAudit.event("grant_evicted", userId, live.get(i).getName(), "reason=per_user_cap");
+            live.get(i).remove();
+        }
+    }
+
+    private static boolean removable(Node node, long now) throws RepositoryException {
+        return (node.hasProperty("expires") && node.getProperty("expires").getLong() <= now)
+                || (node.hasProperty("revoked") && node.getProperty("revoked").getBoolean());
     }
 
     private static void requireToken(String token, String prefix) throws RepositoryException {
         if (token == null || !TOKEN.matcher(token).matches() || !token.startsWith(prefix + "_")) throw invalid();
-    }
-
-    private static boolean expired(Node node) throws RepositoryException {
-        return node.hasProperty("expires") && node.getProperty("expires").getLong() <= now();
     }
 
     private static long created(Node node) {
@@ -307,17 +367,23 @@ public class OboService implements Runnable {
         catch (RepositoryException e) { return 0; }
     }
 
+    private static Node folder(Session session, String root, String id) throws RepositoryException {
+        return child(child(session.getNode(root), id.substring(0, 2)), id.substring(0, 16));
+    }
+
     private static Node child(Node parent, String name) throws RepositoryException {
         return parent.hasNode(name) ? parent.getNode(name) : parent.addNode(name, CONTAINER);
     }
 
-    /** Hashed bucket so no single parent holds every record. */
+    /** First 16 hex characters of the user's hash: the user's folder, and the prefix of every record id. */
+    static String userKey(String userId) { return hash(userId).substring(0, 16); }
     static String bucket(String key) { return hash(key).substring(0, 2); }
-    static String grantPath(String id) { return ROOT + "/" + bucket(id) + "/" + id; }
+    static String path(String root, String id) { return root + "/" + id.substring(0, 2) + "/" + id.substring(0, 16) + "/" + id; }
+    static String recordId(String userId) { return userKey(userId) + random(20); }
 
     private interface Operation<T> { T run(Session session) throws RepositoryException; }
 
-    /** Retries when a concurrent writer (a sibling request or the cleanup job) created or removed a shared bucket. */
+    /** Retries when a concurrent writer (a sibling request or the cleanup job) created or removed a shared folder. */
     private <T> T retrying(Operation<T> operation) throws RepositoryException {
         for (int attempt = 1; ; attempt++) {
             Session session = session();
@@ -330,16 +396,23 @@ public class OboService implements Runnable {
     }
 
     void requireUser(Session session, String userId) throws RepositoryException {
-        if (!(session instanceof JackrabbitSession) || userId == null || "anonymous".equals(userId)
-                || userId.startsWith("oauth-")) throw invalid();
-        Authorizable authorizable = ((JackrabbitSession) session).getUserManager().getAuthorizable(userId);
+        requireUser(users(session), userId);
+    }
+
+    void requireUser(UserManager users, String userId) throws RepositoryException {
+        if (userId == null || "anonymous".equals(userId) || userId.startsWith("oauth-")) throw invalid();
+        Authorizable authorizable = users.getAuthorizable(userId);
         if (!(authorizable instanceof User) || ((User) authorizable).isSystemUser() || ((User) authorizable).isDisabled()) throw invalid();
         // Delegation maps to the user's own principals, and for administrators that bypasses every ACL.
-        if (!allowAdministrators() && administrator((User) authorizable)) throw invalid();
+        if (!allowAdministrators() && administrator((User) authorizable)) {
+            OboAudit.event("delegation_refused", userId, null, "reason=administrator");
+            throw invalid();
+        }
     }
 
     private static boolean administrator(User user) throws RepositoryException {
         if (user.isAdmin()) return true;
+        // Transitive; the service user can read member-reference lists, so large groups are covered too.
         Iterator<Group> groups = user.memberOf();
         while (groups != null && groups.hasNext()) {
             if (ADMINISTRATORS.equals(groups.next().getID())) return true;
@@ -347,28 +420,37 @@ public class OboService implements Runnable {
         return false;
     }
 
-    private String userIdentifier(Session session, String userId) throws RepositoryException {
-        requireUser(session, userId);
-        Authorizable user = ((JackrabbitSession) session).getUserManager().getAuthorizable(userId);
-        if (user == null) throw invalid();
-        Node node = session.getNode(user.getPath());
-        // Oak derives the UUID from the username; the protected creation date distinguishes replacements.
-        return node.getIdentifier() + ":" + node.getProperty("jcr:created").getDate().getTimeInMillis();
+    /** The user node identifier plus its protected creation time, so a recreated username differs. */
+    String userIdentifier(Records records, UserManager users, String userId) throws RepositoryException {
+        requireUser(users, userId);
+        Authorizable user = users.getAuthorizable(userId);
+        Record node = user == null ? null : records.get(user.getPath());
+        long created = node == null ? -1 : node.date("jcr:created");
+        if (node == null || node.identifier() == null || created < 0) throw invalid();
+        return node.identifier() + ":" + created;
     }
 
     private void requireGrantUser(Session session, Node grant) throws RepositoryException {
         // Recreating the same username must never inherit a previous person's delegation.
-        if (!string(grant, "userIdentifier").equals(userIdentifier(session, string(grant, "userId")))) throw invalid();
+        if (!string(grant, "userIdentifier").equals(userIdentifier(records(session), users(session), string(grant, "userId")))) {
+            throw invalid();
+        }
+    }
+
+    private static UserManager users(Session session) throws RepositoryException {
+        if (!(session instanceof JackrabbitSession)) throw invalid();
+        return ((JackrabbitSession) session).getUserManager();
     }
 
     private Session session() throws RepositoryException { return repository.loginService("obo", null); }
     static long now() { return System.currentTimeMillis(); }
-    private static String id(String token) { return token.substring(4, token.indexOf('.')); }
+    static String id(String token) { return token.substring(4, token.indexOf('.')); }
     private static String token(String prefix, String id) { return prefix + "_" + id + "." + random(); }
-    static String random() {
-        byte[] bytes = new byte[32];
-        RANDOM.nextBytes(bytes);
-        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
+    static String random() { return random(32); }
+    private static String random(int bytes) {
+        byte[] value = new byte[bytes];
+        RANDOM.nextBytes(value);
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(value);
     }
     static String challenge(String verifier) {
         return Base64.getUrlEncoder().withoutPadding().encodeToString(digest(verifier));
@@ -378,6 +460,8 @@ public class OboService implements Runnable {
         for (byte b : digest(value)) hex.append(String.format("%02x", b & 255));
         return hex.toString();
     }
+    /** Short, non-reversible handle for logs. Never log a token or a record id that a token embeds. */
+    static String fingerprint(String id) { return id == null ? "-" : hash("grant:" + id).substring(0, 12); }
     private static byte[] digest(String value) {
         try { return MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8)); }
         catch (NoSuchAlgorithmException e) { throw new IllegalStateException(e); }
@@ -385,20 +469,61 @@ public class OboService implements Runnable {
     static boolean equal(String expected, String actual) {
         return MessageDigest.isEqual(expected.getBytes(StandardCharsets.UTF_8), actual.getBytes(StandardCharsets.UTF_8));
     }
+    private static String nullToEmpty(String value) { return value == null ? "" : value; }
     private static boolean matches(Node node, String property, String token) throws RepositoryException {
         return node.hasProperty(property) && equal(string(node, property), hash(token));
     }
     private static String string(Node node, String property) throws RepositoryException { return node.getProperty(property).getString(); }
+    private static long number(Node node, String property) throws RepositoryException { return node.getProperty(property).getLong(); }
     static InvalidDelegationException invalid() { return new InvalidDelegationException(); }
     static final class InvalidDelegationException extends RepositoryException {
         private static final long serialVersionUID = 1L;
         InvalidDelegationException() { super("Invalid or expired delegation"); }
     }
 
+    /** Read-only view of stored records, over a JCR session or an Oak root. */
+    interface Records {
+        /** The record at an absolute path, or null when it does not exist or cannot be read. */
+        Record get(String path) throws RepositoryException;
+    }
+
+    interface Record {
+        String identifier() throws RepositoryException;
+        /** Null when absent. */
+        String string(String name) throws RepositoryException;
+        long number(String name, long absent) throws RepositoryException;
+        boolean flag(String name) throws RepositoryException;
+        /** Milliseconds, or -1 when absent. */
+        long date(String name) throws RepositoryException;
+    }
+
+    static Records records(Session session) {
+        return path -> {
+            if (!session.nodeExists(path)) return null;
+            Node node = session.getNode(path);
+            return new Record() {
+                @Override public String identifier() throws RepositoryException { return node.getIdentifier(); }
+                @Override public String string(String name) throws RepositoryException {
+                    return node.hasProperty(name) ? node.getProperty(name).getString() : null;
+                }
+                @Override public long number(String name, long absent) throws RepositoryException {
+                    return node.hasProperty(name) ? node.getProperty(name).getLong() : absent;
+                }
+                @Override public boolean flag(String name) throws RepositoryException {
+                    return node.hasProperty(name) && node.getProperty(name).getBoolean();
+                }
+                @Override public long date(String name) throws RepositoryException {
+                    return node.hasProperty(name) ? node.getProperty(name).getDate().getTimeInMillis() : -1;
+                }
+            };
+        };
+    }
+
     @Override
     public void run() {
         if (!enabled()) return;
         long deadline = now() + CLEANUP_BUDGET_MS;
+        int removed = 0;
         try {
             Session session = session();
             try {
@@ -406,33 +531,55 @@ public class OboService implements Runnable {
                 Node consents = session.getNode(CONSENTS);
                 int start = cleanupCursor;
                 int next = 0;
-                int pendingRemovals = 0;
+                Counter pending = new Counter(session);
                 // No count cap: every bucket is swept. Only a time budget stops a pass, and the next one resumes there.
                 for (int i = 0; i < BUCKETS; i++) {
                     int index = (start + i) % BUCKETS;
                     if (i > 0 && now() > deadline) { next = index; break; }
                     String name = String.format("%02x", index);
-                    if (grants.hasNode(name)) pendingRemovals += sweep(grants.getNode(name), false);
-                    if (consents.hasNode(name)) pendingRemovals += sweep(consents.getNode(name), true);
-                    if (pendingRemovals >= 200) { session.save(); pendingRemovals = 0; }
+                    if (grants.hasNode(name)) sweep(grants.getNode(name), pending);
+                    if (consents.hasNode(name)) sweep(consents.getNode(name), pending);
                 }
                 session.save();
+                removed = pending.total;
                 cleanupCursor = next;
             } finally { session.logout(); }
-        } catch (RepositoryException e) { LOG.warn("User-delegation cleanup failed ({})", e.getClass().getSimpleName()); }
+            if (removed > 0) LOG.debug("User-delegation cleanup removed {} expired or revoked records", removed);
+        } catch (RepositoryException e) {
+            LOG.warn("User-delegation cleanup failed; the next run retries", e);
+        }
     }
 
-    private static int sweep(Node bucket, boolean perUser) throws RepositoryException {
-        int removed = 0;
-        NodeIterator nodes = bucket.getNodes();
-        while (nodes.hasNext()) {
-            Node node = nodes.nextNode();
-            if (perUser) {
-                removed += sweep(node, false);
-                if (!node.hasNodes()) { node.remove(); removed++; }
-            } else if (expired(node)) { node.remove(); removed++; }
+    /** Saves every {@link #SAVE_BATCH} removals so no commit grows with the size of the store. */
+    private static final class Counter {
+        private final Session session;
+        private int sinceSave;
+        int total;
+        Counter(Session session) { this.session = session; }
+        void removed(Node node) throws RepositoryException {
+            node.remove();
+            total++;
+            if (++sinceSave >= SAVE_BATCH) { session.save(); sinceSave = 0; }
         }
-        return removed;
+    }
+
+    private static void sweep(Node bucket, Counter pending) throws RepositoryException {
+        long now = now();
+        NodeIterator users = bucket.getNodes();
+        while (users.hasNext()) {
+            Node user = users.nextNode();
+            if (user.hasProperty("configurationHash")) {
+                // A record directly in a bucket comes from a pre-release layout and can no longer be reached.
+                pending.removed(user);
+                continue;
+            }
+            NodeIterator records = user.getNodes();
+            while (records.hasNext()) {
+                Node record = records.nextNode();
+                if (removable(record, now)) pending.removed(record);
+            }
+            if (!user.hasNodes()) pending.removed(user);
+        }
     }
 
     static final class Authorization {

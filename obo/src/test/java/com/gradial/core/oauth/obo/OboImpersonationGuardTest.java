@@ -3,7 +3,6 @@ package com.gradial.core.oauth.obo;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
-import java.lang.reflect.Field;
 import java.util.Dictionary;
 import java.util.Hashtable;
 
@@ -19,9 +18,8 @@ import org.osgi.service.cm.ConfigurationAdmin;
 class OboImpersonationGuardTest {
     private static OboImpersonationGuard guard(ConfigurationAdmin admin) throws Exception {
         OboImpersonationGuard guard = new OboImpersonationGuard();
-        Field field = OboImpersonationGuard.class.getDeclaredField("configurationAdmin");
-        field.setAccessible(true);
-        field.set(guard, admin);
+        if (admin != null) guard.bindConfigurationAdmin(admin);
+        guard.activate();
         return guard;
     }
 
@@ -81,5 +79,30 @@ class OboImpersonationGuardTest {
         assertFalse(guard(null).impersonated(request));
         when(resolver.getAttribute("user.impersonator")).thenReturn("admin");
         assertTrue(guard(null).impersonated(request));
+    }
+
+    @Test
+    void namesAreReadOnceAndReloadedOnlyWhenTheAuthenticatorConfigurationChanges() throws Exception {
+        Dictionary<String, Object> properties = new Hashtable<>();
+        Configuration configuration = mock(Configuration.class);
+        when(configuration.getProperties()).thenReturn(properties);
+        ConfigurationAdmin admin = mock(ConfigurationAdmin.class);
+        when(admin.listConfigurations(anyString())).thenReturn(new Configuration[] {configuration});
+        OboImpersonationGuard guard = guard(admin);
+        clearInvocations(admin);
+        for (int i = 0; i < 100; i++) guard.impersonated(mock(HttpServletRequest.class));
+        verifyNoInteractions(admin);
+
+        properties.put("auth.sudo.parameter", "actas");
+        org.osgi.service.cm.ConfigurationEvent unrelated = mock(org.osgi.service.cm.ConfigurationEvent.class);
+        when(unrelated.getPid()).thenReturn("org.apache.sling.other");
+        guard.configurationEvent(unrelated);
+        verifyNoInteractions(admin);
+        org.osgi.service.cm.ConfigurationEvent changed = mock(org.osgi.service.cm.ConfigurationEvent.class);
+        when(changed.getPid()).thenReturn("org.apache.sling.auth.core.impl.SlingAuthenticator");
+        guard.configurationEvent(changed);
+        HttpServletRequest parameter = mock(HttpServletRequest.class);
+        when(parameter.getParameter("actas")).thenReturn("bob");
+        assertTrue(guard.impersonationRequested(parameter));
     }
 }

@@ -5,27 +5,26 @@ import static org.mockito.Mockito.*;
 
 import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
-import java.security.Principal;
 import java.util.Base64;
-import java.util.Collections;
-import java.util.Set;
 
-import javax.jcr.Credentials;
 import javax.jcr.GuestCredentials;
-import javax.jcr.RepositoryException;
-import javax.jcr.SimpleCredentials;
-import javax.security.auth.Subject;
-import javax.security.auth.login.LoginException;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
-import org.apache.jackrabbit.oak.api.AuthInfo;
-import org.apache.sling.auth.core.spi.AuthenticationInfo;
-import org.apache.sling.auth.core.AuthenticationSupport;
 import org.apache.sling.api.resource.ResourceResolver;
+import org.apache.sling.auth.core.AuthenticationSupport;
+import org.apache.sling.auth.core.spi.AuthenticationInfo;
 import org.junit.jupiter.api.Test;
 
 class OboAuthenticationTest {
+    private static final String TOKEN = "goa_0123456789abcdefABCDEFGHIJKLMNOPQRSTUVWXYZa.ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq";
+
+    private static OboService service() {
+        OboService service = mock(OboService.class);
+        when(service.paths()).thenReturn(OboPaths.of(null));
+        return service;
+    }
+
     private OboAuthenticationHandler handler(OboService service) throws Exception {
         OboAuthenticationHandler handler = new OboAuthenticationHandler();
         Field field = OboAuthenticationHandler.class.getDeclaredField("service");
@@ -34,101 +33,102 @@ class OboAuthenticationTest {
         return handler;
     }
 
+    private static HttpServletRequest request(String header, String method, String uri) {
+        HttpServletRequest request = mock(HttpServletRequest.class);
+        when(request.getHeader("Authorization")).thenReturn(header);
+        when(request.getMethod()).thenReturn(method);
+        when(request.getRequestURI()).thenReturn(uri);
+        return request;
+    }
+
     @Test
     void ordinaryBearerBasicAndCookieAuthenticationRemainAvailableToExistingHandlers() throws Exception {
-        OboService service = mock(OboService.class);
+        OboService service = service();
         OboAuthenticationHandler handler = handler(service);
-        HttpServletRequest request = mock(HttpServletRequest.class);
-        when(request.getRequestURI()).thenReturn("/content/site");
         for (String header : new String[] {null, "Bearer existing-granite-token", "Basic existing-user-credentials"}) {
-            when(request.getHeader("Authorization")).thenReturn(header);
-            assertNull(handler.extractCredentials(request, mock(HttpServletResponse.class)));
+            assertNull(handler.extractCredentials(request(header, "GET", "/content/site"), mock(HttpServletResponse.class)));
         }
         verifyNoInteractions(service);
     }
 
     @Test
-    void invalidDelegationFailsRatherThanFallingBackToAValidBrowserCookie() throws Exception {
-        OboService service = mock(OboService.class);
-        when(service.authenticate("invalid")).thenThrow(OboService.invalid());
-        HttpServletRequest request = mock(HttpServletRequest.class);
-        when(request.getHeader("Authorization")).thenReturn("GradialOBO invalid");
-        HttpServletResponse response = mock(HttpServletResponse.class);
-        assertSame(AuthenticationInfo.DOING_AUTH, handler(service).extractCredentials(request, response));
-        verify(response).setStatus(403);
-        verify(response).flushBuffer();
-        verify(response, never()).setHeader(eq("WWW-Authenticate"), anyString());
-    }
-
-    @Test
-    void repositoryOutageStopsProcessingWithoutFallingBackOrMisreportingAnInvalidUser() throws Exception {
-        OboService service = mock(OboService.class);
-        when(service.authenticate("token")).thenThrow(new RepositoryException("backend unavailable"));
-        HttpServletRequest request = mock(HttpServletRequest.class);
-        HttpServletResponse response = mock(HttpServletResponse.class);
-        when(request.getHeader("Authorization")).thenReturn("GradialOBO token");
-        assertSame(AuthenticationInfo.DOING_AUTH, handler(service).extractCredentials(request, response));
-        verify(response).setStatus(503);
-    }
-
-    @Test
-    void authenticatedIdentityAndOpaqueCredentialsArePassedToOak() throws Exception {
-        OboService service = mock(OboService.class);
-        when(service.authenticate("opaque-access-token")).thenReturn("ordinary-author");
-        HttpServletRequest request = mock(HttpServletRequest.class);
-        when(request.getHeader("Authorization")).thenReturn("GradialOBO opaque-access-token");
-        AuthenticationInfo info = handler(service).extractCredentials(request, mock(HttpServletResponse.class));
-        assertEquals("ordinary-author", info.getUser());
-        assertInstanceOf(OboCredentials.class, info.get("user.jcr.credentials"));
+    void theHandlerOnlyWrapsTheCredentialAndNeverReadsTheRepository() throws Exception {
+        OboService service = service();
+        AuthenticationInfo info = handler(service).extractCredentials(request("GradialOBO  " + TOKEN + " ", "POST", "/content/site"),
+                mock(HttpServletResponse.class));
         assertEquals("GradialOBO", info.getAuthType());
-        assertNull(info.get("user.jcr.session"));
+        assertNull(info.getUser(), "identity comes from the login module, not from the header");
+        assertEquals(TOKEN, ((OboCredentials) info.get("user.jcr.credentials")).token());
+        verify(service, never()).validateAccess(any(), any(), any());
+    }
+
+    @Test
+    void anEmptyCredentialOrAMissingServiceFailsWithoutFallingBack() throws Exception {
+        for (OboService available : new OboService[] {null, service()}) {
+            HttpServletResponse response = mock(HttpServletResponse.class);
+            String header = available == null ? "GradialOBO " + TOKEN : "GradialOBO   ";
+            assertSame(AuthenticationInfo.DOING_AUTH, handler(available).extractCredentials(request(header, "GET", "/content"), response));
+            verify(response).setStatus(403);
+            verify(response).flushBuffer();
+            verify(response, never()).setHeader(eq("WWW-Authenticate"), anyString());
+        }
+    }
+
+    @Test
+    void deniedPathsAreRefusedBeforeLoginIncludingNonSlingContextsAndEncodedForms() throws Exception {
+        String[] denied = {"/system/console/bundles", "/oauth/token", "/crx/de/index.jsp", "/crx/%70ackmgr/service.jsp",
+            "//crx//packmgr", "/content/../crx/packmgr", "/LIBS/granite/security/post/authorizables", "/bin/gradial/obo/authorize",
+            "/libs/granite/oauth/authorize", "/etc/packages;x=y/my.zip", "/%2e%2e/crx", "/crx%00"};
+        for (String uri : denied) {
+            HttpServletResponse response = mock(HttpServletResponse.class);
+            assertSame(AuthenticationInfo.DOING_AUTH, handler(service()).extractCredentials(
+                    request("GradialOBO " + TOKEN, "GET", uri), response), uri);
+            verify(response).setStatus(403);
+        }
+        assertNotNull(handler(service()).extractCredentials(request("GradialOBO " + TOKEN, "GET", "/libs/granite/security/currentuser.json"),
+                mock(HttpServletResponse.class)).get("user.jcr.credentials"));
     }
 
     @Test
     void failedRepositoryLoginCommitsDenialBeforeSlingCanRequestBasicCredentials() throws Exception {
         HttpServletResponse response = mock(HttpServletResponse.class);
-        handler(mock(OboService.class)).authenticationFailed(mock(HttpServletRequest.class), response,
-                new AuthenticationInfo("GradialOBO", "author"));
+        handler(service()).authenticationFailed(mock(HttpServletRequest.class), response, new AuthenticationInfo("GradialOBO"));
         verify(response).setStatus(403);
         verify(response).flushBuffer();
         verify(response, never()).setHeader(eq("WWW-Authenticate"), anyString());
     }
 
     @Test
-    void successfulAuthenticationMustHaveTheActualDelegatedResolverIdentity() throws Exception {
-        OboAuthenticationHandler handler = handler(mock(OboService.class));
-        HttpServletRequest request = mock(HttpServletRequest.class);
+    void successRequiresTheSessionTheLoginModuleOpenedForThisCredential() throws Exception {
+        OboAuthenticationHandler handler = handler(service());
+        HttpServletRequest request = request("GradialOBO " + TOKEN, "GET", "/content");
         ResourceResolver resolver = mock(ResourceResolver.class);
         when(request.getAttribute(AuthenticationSupport.REQUEST_ATTRIBUTE_RESOLVER)).thenReturn(resolver);
-        when(resolver.getUserID()).thenReturn("admin");
         HttpServletResponse response = mock(HttpServletResponse.class);
-        assertTrue(handler.authenticationSucceeded(request, response, new AuthenticationInfo("GradialOBO", "author")));
+        assertTrue(handler.authenticationSucceeded(request, response, new AuthenticationInfo("GradialOBO")));
         verify(response).setStatus(403);
-        when(resolver.getUserID()).thenReturn("author");
-        assertFalse(handler.authenticationSucceeded(request, mock(HttpServletResponse.class),
-                new AuthenticationInfo("GradialOBO", "author")));
+        when(resolver.getAttribute(OboLoginModuleFactory.ACCESS_ATTRIBUTE)).thenReturn(OboService.hash(TOKEN));
+        assertFalse(handler.authenticationSucceeded(request, mock(HttpServletResponse.class), new AuthenticationInfo("GradialOBO")));
     }
 
     @Test
     void confidentialClientBasicCredentialsAreOnlyInterceptedAtTokenAndRevokeEndpoints() throws Exception {
-        OboService service = mock(OboService.class);
+        OboService service = service();
         when(service.clientMatches("gradial", "secret")).thenReturn(true);
-        HttpServletRequest request = mock(HttpServletRequest.class);
-        when(request.getHeader("Authorization")).thenReturn("Basic " + Base64.getEncoder()
-                .encodeToString("gradial:secret".getBytes(StandardCharsets.UTF_8)));
+        String basic = Base64.getEncoder().encodeToString("gradial:secret".getBytes(StandardCharsets.UTF_8));
         OboAuthenticationHandler handler = handler(service);
-        for (String endpoint : new String[] {"/bin/gradial/obo/token", "/bin/gradial/obo/revoke"}) {
-            when(request.getRequestURI()).thenReturn(endpoint);
-            assertInstanceOf(GuestCredentials.class, handler.extractCredentials(request,
-                    mock(HttpServletResponse.class)).get("user.jcr.credentials"));
+        for (String scheme : new String[] {"Basic ", "basic ", "BASIC "}) {
+            for (String endpoint : new String[] {"/bin/gradial/obo/token", "/bin/gradial/obo/revoke", "/bin/gradial//obo/token"}) {
+                assertInstanceOf(GuestCredentials.class, handler.extractCredentials(request(scheme + basic, "POST", endpoint),
+                        mock(HttpServletResponse.class)).get("user.jcr.credentials"), scheme + endpoint);
+            }
         }
-        when(request.getRequestURI()).thenReturn("/content/site");
-        assertNull(handler.extractCredentials(request, mock(HttpServletResponse.class)));
+        assertNull(handler.extractCredentials(request("Basic " + basic, "POST", "/content/site"), mock(HttpServletResponse.class)));
     }
 
     @Test
     void competingClientAuthenticationMethodsAndDuplicateBodyParametersAreRejected() {
-        OboService service = mock(OboService.class);
+        OboService service = service();
         when(service.clientMatches("gradial", "secret")).thenReturn(true);
         HttpServletRequest request = mock(HttpServletRequest.class);
         when(request.getParameterValues("client_id")).thenReturn(new String[] {"gradial", "other"});
@@ -136,45 +136,5 @@ class OboAuthenticationTest {
         assertFalse(OboClientAuthentication.accepts(request, service));
         when(request.getHeader("Authorization")).thenReturn("Basic !!!");
         assertFalse(OboClientAuthentication.accepts(request, service));
-    }
-
-    @Test
-    void loginModuleUsesOriginalUserPrincipalsAndNeverServiceUserPrincipals() throws Exception {
-        OboService service = mock(OboService.class);
-        when(service.authenticate("token")).thenReturn("ordinary-author");
-        Subject subject = new Subject();
-        OboLoginModuleFactory.DelegationLoginModule module = module(service, new OboCredentials("token"));
-        module.initialize(subject, null, Collections.emptyMap(), Collections.emptyMap());
-        assertTrue(module.login());
-        assertTrue(module.commit());
-        AuthInfo info = subject.getPublicCredentials(AuthInfo.class).iterator().next();
-        assertEquals("ordinary-author", info.getUserID());
-        assertEquals(Collections.singleton("ordinary-author"), subject.getPrincipals().stream()
-                .map(Principal::getName).collect(java.util.stream.Collectors.toSet()));
-        assertTrue(module.logout());
-        assertTrue(subject.getPrincipals().isEmpty());
-        assertTrue(subject.getPublicCredentials().isEmpty());
-    }
-
-    @Test
-    void loginModuleRejectsInvalidOpaqueCredentialsAndIgnoresOrdinaryCredentials() throws Exception {
-        OboService service = mock(OboService.class);
-        when(service.authenticate("bad")).thenThrow(new RepositoryException("failure"));
-        OboLoginModuleFactory.DelegationLoginModule invalid = module(service, new OboCredentials("bad"));
-        invalid.initialize(new Subject(), null, Collections.emptyMap(), Collections.emptyMap());
-        assertThrows(LoginException.class, invalid::login);
-        OboLoginModuleFactory.DelegationLoginModule ordinary = module(service, new SimpleCredentials("author", new char[0]));
-        ordinary.initialize(new Subject(), null, Collections.emptyMap(), Collections.emptyMap());
-        assertFalse(ordinary.login());
-        assertFalse(ordinary.commit());
-    }
-
-    private OboLoginModuleFactory.DelegationLoginModule module(OboService service, Credentials credentials) {
-        return new OboLoginModuleFactory.DelegationLoginModule(service) {
-            @Override protected Credentials getCredentials() { return credentials; }
-            @Override protected Set<? extends Principal> getPrincipals(String userId) {
-                return Collections.singleton((Principal) () -> userId);
-            }
-        };
     }
 }

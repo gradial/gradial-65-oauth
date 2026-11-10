@@ -5,14 +5,23 @@ import static org.mockito.Mockito.*;
 import java.lang.reflect.Field;
 
 import javax.servlet.FilterChain;
-import javax.servlet.http.HttpServletResponse;
 import javax.servlet.http.Cookie;
+import javax.servlet.http.HttpServletResponse;
 
 import org.apache.sling.api.SlingHttpServletRequest;
+import org.apache.sling.api.request.RequestPathInfo;
 import org.apache.sling.api.resource.ResourceResolver;
 import org.junit.jupiter.api.Test;
 
 class OboAuthenticationFilterTest {
+    private static final String TOKEN = "goa_0123456789abcdefABCDEFGHIJKLMNOPQRSTUVWXYZa.ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq";
+
+    private static OboService service() {
+        OboService service = mock(OboService.class);
+        when(service.paths()).thenReturn(OboPaths.of(null));
+        return service;
+    }
+
     private OboAuthenticationFilter filter(OboService service) throws Exception {
         OboAuthenticationFilter filter = new OboAuthenticationFilter();
         Field field = OboAuthenticationFilter.class.getDeclaredField("service");
@@ -20,66 +29,86 @@ class OboAuthenticationFilterTest {
         field.set(filter, service);
         Field guard = OboAuthenticationFilter.class.getDeclaredField("guard");
         guard.setAccessible(true);
-        guard.set(filter, new OboImpersonationGuard());
+        OboImpersonationGuard impersonation = new OboImpersonationGuard();
+        impersonation.activate();
+        guard.set(filter, impersonation);
         return filter;
     }
 
-    private SlingHttpServletRequest request(String header, String user) {
+    /** A request whose session the login module stamped (or not) with the hash of {@code stampedToken}. */
+    private SlingHttpServletRequest request(String header, String user, String stampedToken, String method, String path) {
         SlingHttpServletRequest request = mock(SlingHttpServletRequest.class);
         ResourceResolver resolver = mock(ResourceResolver.class);
+        RequestPathInfo info = mock(RequestPathInfo.class);
         when(request.getHeader("Authorization")).thenReturn(header);
         when(request.getResourceResolver()).thenReturn(resolver);
+        when(request.getRequestPathInfo()).thenReturn(info);
+        when(request.getMethod()).thenReturn(method);
+        when(info.getResourcePath()).thenReturn(path);
         when(resolver.getUserID()).thenReturn(user);
         when(request.getRemoteUser()).thenReturn(user);
+        if (stampedToken != null) {
+            when(resolver.getAttribute(OboLoginModuleFactory.ACCESS_ATTRIBUTE)).thenReturn(OboService.hash(stampedToken));
+        }
         return request;
     }
 
+    private SlingHttpServletRequest request(String header, String user, String stampedToken) {
+        return request(header, user, stampedToken, "POST", "/content/site/en");
+    }
+
+    private static void refused(HttpServletResponse response, FilterChain chain) throws Exception {
+        verify(response).setStatus(403);
+        verify(response).flushBuffer();
+        verifyNoInteractions(chain);
+        verify(response, never()).setHeader(eq("WWW-Authenticate"), anyString());
+    }
+
     @Test
-    void onlyTheValidatedDelegatedUserMayExecuteTheContentRequest() throws Exception {
-        OboService service = mock(OboService.class);
-        when(service.authenticate("valid")).thenReturn("writer");
+    void aSessionOpenedByTheLoginModuleForThisCredentialProceedsWithoutARepositoryRead() throws Exception {
+        OboService service = service();
         FilterChain chain = mock(FilterChain.class);
-        SlingHttpServletRequest request = request("GradialOBO valid", "writer");
+        SlingHttpServletRequest request = request("GradialOBO " + TOKEN, "writer", TOKEN);
         HttpServletResponse response = mock(HttpServletResponse.class);
         filter(service).doFilter(request, response, chain);
         verify(chain).doFilter(request, response);
+        verify(service, never()).validateAccess(any(), any(), any());
     }
 
     @Test
-    void ambientAdminResolverOrRemoteUserCannotOverrideTheGrant() throws Exception {
-        OboService service = mock(OboService.class);
-        when(service.authenticate("valid")).thenReturn("writer");
-        for (String selectedUser : new String[] {"admin", "writer"}) {
-            SlingHttpServletRequest request = request("GradialOBO valid", selectedUser);
-            when(request.getRemoteUser()).thenReturn("admin");
+    void aCookieOrOtherHandlerSessionCannotStandInForTheDelegatedOne() throws Exception {
+        String other = TOKEN.replace('A', 'B');
+        for (String stamped : new String[] {null, other}) {
             HttpServletResponse response = mock(HttpServletResponse.class);
             FilterChain chain = mock(FilterChain.class);
-            filter(service).doFilter(request, response, chain);
-            verify(response).setStatus(403);
-            verify(response).flushBuffer();
-            verifyNoInteractions(chain);
+            filter(service()).doFilter(request("GradialOBO " + TOKEN, "admin", stamped), response, chain);
+            refused(response, chain);
         }
     }
 
     @Test
-    void invalidGrantAndMissingServiceRefuseEvenAnAlreadyAuthenticatedAdmin() throws Exception {
-        OboService service = mock(OboService.class);
-        when(service.authenticate("invalid")).thenThrow(OboService.invalid());
-        for (OboService available : new OboService[] {service, null}) {
-            HttpServletResponse response = mock(HttpServletResponse.class);
-            FilterChain chain = mock(FilterChain.class);
-            filter(available).doFilter(request("GradialOBO invalid", "admin"), response, chain);
-            verify(response).setStatus(403);
-            verifyNoInteractions(chain);
-            verify(response, never()).setHeader(eq("WWW-Authenticate"), anyString());
-        }
+    void aRemoteUserThatDisagreesWithTheSessionIsRefused() throws Exception {
+        SlingHttpServletRequest request = request("GradialOBO " + TOKEN, "writer", TOKEN);
+        when(request.getRemoteUser()).thenReturn("admin");
+        HttpServletResponse response = mock(HttpServletResponse.class);
+        FilterChain chain = mock(FilterChain.class);
+        filter(service()).doFilter(request, response, chain);
+        refused(response, chain);
+    }
+
+    @Test
+    void aMissingServiceRefusesEvenAnAlreadyAuthenticatedSession() throws Exception {
+        HttpServletResponse response = mock(HttpServletResponse.class);
+        FilterChain chain = mock(FilterChain.class);
+        filter(null).doFilter(request("GradialOBO " + TOKEN, "writer", TOKEN), response, chain);
+        refused(response, chain);
     }
 
     @Test
     void nativeAuthenticationWithoutDelegationIsUnchanged() throws Exception {
-        OboService service = mock(OboService.class);
+        OboService service = service();
         for (String header : new String[] {null, "Bearer native", "Basic normal"}) {
-            SlingHttpServletRequest request = request(header, "native-user");
+            SlingHttpServletRequest request = request(header, "native-user", null, "POST", "/crx/packmgr/service.jsp");
             HttpServletResponse response = mock(HttpServletResponse.class);
             FilterChain chain = mock(FilterChain.class);
             filter(service).doFilter(request, response, chain);
@@ -89,22 +118,44 @@ class OboAuthenticationFilterTest {
     }
 
     @Test
-    void delegatedRequestsRefuseExplicitSudoEvenWhenTheProviderIgnoresItsParameter() throws Exception {
-        OboService service = mock(OboService.class);
+    void delegatedRequestsRefuseExplicitSudo() throws Exception {
         for (String parameter : new String[] {"sudo", "sling.sudo"}) {
-            SlingHttpServletRequest request = request("GradialOBO valid", "writer");
+            SlingHttpServletRequest request = request("GradialOBO " + TOKEN, "writer", TOKEN);
             when(request.getParameter(parameter)).thenReturn("admin");
             FilterChain chain = mock(FilterChain.class);
             HttpServletResponse response = mock(HttpServletResponse.class);
-            filter(service).doFilter(request, response, chain);
-            verify(response).setStatus(403);
-            verifyNoInteractions(chain);
+            filter(service()).doFilter(request, response, chain);
+            refused(response, chain);
         }
-        SlingHttpServletRequest request = request("GradialOBO valid", "writer");
+        SlingHttpServletRequest request = request("GradialOBO " + TOKEN, "writer", TOKEN);
         when(request.getCookies()).thenReturn(new Cookie[] {new Cookie("sling.sudo", "admin")});
         HttpServletResponse response = mock(HttpServletResponse.class);
-        filter(service).doFilter(request, response, mock(FilterChain.class));
-        verify(response).setStatus(403);
-        verifyNoInteractions(service);
+        FilterChain chain = mock(FilterChain.class);
+        filter(service()).doFilter(request, response, chain);
+        refused(response, chain);
+    }
+
+    @Test
+    void deniedResolvedResourcePathsAreRefusedAndContentPathsAreNot() throws Exception {
+        String[][] refused = {
+            {"POST", "/crx/packmgr/service.jsp"}, {"GET", "/libs/granite/security/content/useradmin"},
+            {"POST", "/bin/gradial/obo/token"}, {"POST", "/oauth/token"}, {"GET", "/etc/packages/x.zip"},
+            {"POST", "/home/users/a/author"}, {"POST", "/libs/granite/security/post/authorizables"}};
+        for (String[] call : refused) {
+            HttpServletResponse response = mock(HttpServletResponse.class);
+            FilterChain chain = mock(FilterChain.class);
+            filter(service()).doFilter(request("GradialOBO " + TOKEN, "writer", TOKEN, call[0], call[1]), response, chain);
+            refused(response, chain);
+        }
+        String[][] allowed = {
+            {"POST", "/content/site/en"}, {"GET", "/libs/granite/security/currentuser"}, {"GET", "/home/users/a/author"},
+            {"POST", "/content/dam/site/asset.jpg"}, {"GET", "/libs/granite/csrf/token"}};
+        for (String[] call : allowed) {
+            SlingHttpServletRequest request = request("GradialOBO " + TOKEN, "writer", TOKEN, call[0], call[1]);
+            HttpServletResponse response = mock(HttpServletResponse.class);
+            FilterChain chain = mock(FilterChain.class);
+            filter(service()).doFilter(request, response, chain);
+            verify(chain).doFilter(request, response);
+        }
     }
 }
