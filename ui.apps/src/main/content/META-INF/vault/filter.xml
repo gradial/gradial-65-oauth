@@ -1,4 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!--
+  This package ships no content. Earlier releases filtered /apps/gradial in replace mode, which deleted
+  everything under /apps/gradial (other applications' code and this project's OSGi configurations) on
+  every install. FileVault requires at least one filter, so it now covers one path that nothing creates,
+  in merge mode: install, reinstall and uninstall leave the repository unchanged. The package is kept
+  so upgrades replace the old one in place.
+-->
 <workspaceFilter version="1.0">
-    <filter root="/apps/gradial"/>
+    <filter root="/apps/gradial-ui-apps-noop" mode="merge"/>
 </workspaceFilter>
