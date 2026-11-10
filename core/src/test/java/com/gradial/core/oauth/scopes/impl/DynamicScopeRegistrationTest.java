@@ -126,6 +126,8 @@ class DynamicScopeRegistrationTest {
             Object paths = reference.getProperty(ResourceChangeListener.PATHS);
             if (paths instanceof String[] && Arrays.asList((String[]) paths).contains("/content/site")) {
                 found = true;
+                assertEquals(Arrays.asList("/content/site", "glob:/content/*", "glob:/*"), Arrays.asList((String[]) paths),
+                        "creation of the path or of an ancestor is reported to a listener on its parent");
                 assertEquals(Arrays.asList("ADDED", "REMOVED"),
                         Arrays.asList((String[]) reference.getProperty(ResourceChangeListener.CHANGES)));
             }
@@ -143,6 +145,29 @@ class DynamicScopeRegistrationTest {
         catch (java.io.IOException e) { throw new AssertionError(e); }
         assertTrue(xml.contains("configuration-pid=\"com.gradial.core.oauth.scopes.DynamicScope\""), "existing configurations still apply");
         assertFalse(xml.contains("<service"), "a declarative ResourceChangeListener would have no resource.paths");
+    }
+
+    @Test
+    void listenerPathsWatchEachAncestorsDirectChildrenOnly() {
+        assertEquals(Arrays.asList("/var/workflow/models/gradial", "glob:/var/workflow/models/*", "glob:/var/workflow/*",
+                "glob:/var/*", "glob:/*"), Arrays.asList(DynamicScopeRegistrar.listenerPaths("/var/workflow/models/gradial")));
+        assertEquals(Collections.singletonList("/"), Arrays.asList(DynamicScopeRegistrar.listenerPaths("/")));
+    }
+
+    @Test
+    void aRemovalOfAnUnregisteredScopesPathLogsNothingNew() {
+        DynamicScopeRegistrar scope = registrar("zz", "/content/missing");
+        int before = errors().size();
+        scope.onChange(change(ResourceChange.ChangeType.REMOVED, "/content/missing"));
+        assertEquals(before, errors().size());
+    }
+
+    @Test
+    void creatingAMissingAncestorRegistersTheScope() {
+        DynamicScopeRegistrar scope = registrar("deep", "/content/new/site");
+        path("/content/new/site");
+        scope.onChange(change(ResourceChange.ChangeType.ADDED, "/content/new"));
+        assertEquals(Collections.singletonList("deep"), registeredNames());
     }
 
     @Test

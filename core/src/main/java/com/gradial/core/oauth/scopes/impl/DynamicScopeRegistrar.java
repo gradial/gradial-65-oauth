@@ -94,10 +94,28 @@ public class DynamicScopeRegistrar implements ResourceChangeListener {
             active = true;
         }
         Dictionary<String, Object> properties = new Hashtable<>();
-        properties.put(ResourceChangeListener.PATHS, new String[] {config.resourcePath()});
+        properties.put(ResourceChangeListener.PATHS, listenerPaths(config.resourcePath()));
         properties.put(ResourceChangeListener.CHANGES, new String[] {"ADDED", "REMOVED"});
         listener = context.registerService(ResourceChangeListener.class.getName(), this, properties);
         reconcile(true);
+    }
+
+    /**
+     * The path itself (its removal, and the removal of an ancestor, are reported there), plus each ancestor's
+     * direct children as a glob. Oak filters change sets by the parent path of a change, so the creation of the
+     * path, or of a missing ancestor, is reported only to a listener on that parent; a direct-children glob
+     * sees it without subscribing to the whole subtree below each ancestor.
+     */
+    static String[] listenerPaths(String resourcePath) {
+        java.util.List<String> paths = new java.util.ArrayList<>();
+        paths.add(resourcePath);
+        String parent = resourcePath;
+        while (parent.lastIndexOf('/') > 0) {
+            parent = parent.substring(0, parent.lastIndexOf('/'));
+            paths.add("glob:" + parent + "/*");
+        }
+        if (!"/".equals(resourcePath)) paths.add("glob:/*");
+        return paths.toArray(new String[0]);
     }
 
     @Deactivate
@@ -115,10 +133,15 @@ public class DynamicScopeRegistrar implements ResourceChangeListener {
     @Override
     public void onChange(List<ResourceChange> changes) {
         String path = config.resourcePath();
+        if (LOGGER.isDebugEnabled()) {
+            for (ResourceChange change : changes) {
+                LOGGER.debug("OAuth scope {}: {} {}", config.scopeName(), change.getType(), change.getPath());
+            }
+        }
         for (ResourceChange change : changes) {
             String changed = change.getPath();
             if (path.equals(changed) || path.startsWith(changed + "/")) {
-                reconcile(true);
+                reconcile(false);
                 return;
             }
         }
