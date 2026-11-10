@@ -20,12 +20,16 @@ class RepositoryInitPolicyTest {
     @Test
     void storeParentsAreNonOrderableAndEveryoneCanNeitherReadNorWriteThem() throws Exception {
         String script = script();
-        assertTrue(script.contains("create path (oak:Unstructured) /var/gradial/obo/grants"));
-        assertTrue(script.contains("create path (oak:Unstructured) /var/gradial/obo/consents"));
+        // sling:Folder is a valid child of nt:folder, sling:(Ordered)Folder and unstructured parents, and is not orderable.
+        assertTrue(script.contains("create path (sling:Folder) /var/gradial/obo/grants"));
+        assertTrue(script.contains("create path (sling:Folder) /var/gradial/obo/consents"));
         assertFalse(script.contains("nt:unstructured"));
-        String everyone = script.substring(script.indexOf("set ACL for everyone"), script.indexOf("set ACL for gradial-obo-state"));
-        assertTrue(everyone.contains("deny jcr:read on /var/gradial/obo"));
-        assertTrue(everyone.contains("deny jcr:write,rep:write on /var/gradial/obo"));
+        assertFalse(script.contains("(oak:Unstructured)"), "oak:Unstructured cannot be created under an existing nt:folder");
+        String everyone = script.substring(script.indexOf("set ACL for everyone"), script.indexOf("set ACL for administrators"));
+        assertTrue(everyone.contains("deny jcr:read,rep:write on /var/gradial/obo"));
+        assertFalse(script.contains("jcr:write,rep:write"), "rep:write already contains jcr:write");
+        assertTrue(script.indexOf("set ACL for administrators") > script.indexOf("set ACL for everyone"),
+                "the administrators allow follows the everyone deny so it wins");
     }
 
     @Test

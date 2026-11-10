@@ -25,6 +25,27 @@
     <artifactId>gradial.obo</artifactId>
     <name>Gradial - OBO</name>
     <description>Optional user-scoped delegation bundle for Gradial OAuth</description>
+    <properties>
+        <!-- Repository stack the Oak-backed tests run on: AEM 6.5 SP25 by default (Java 8/11). -->
+        <test.oak.version>1.22.24</test.oak.version>
+        <test.repoinit.version>1.1.38</test.repoinit.version>
+        <test.repoinit.parser.version>1.6.14</test.repoinit.parser.version>
+        <test.guava.version>15.0</test.guava.version>
+    </properties>
+    <profiles>
+        <profile>
+            <!-- Oak 1.22 needs java.security.acl, removed in Java 14, so AEM 6.5 cannot run there either.
+                 On newer JDKs the same tests run on the AEM 6.5 LTS stack (aem-lts runs exactly these versions). -->
+            <id>aem-lts-test-stack</id>
+            <activation><jdk>[14,)</jdk></activation>
+            <properties>
+                <test.oak.version>1.88.0</test.oak.version>
+                <test.repoinit.version>1.1.54</test.repoinit.version>
+                <test.repoinit.parser.version>1.9.2</test.repoinit.parser.version>
+                <test.guava.version>33.4.8-jre</test.guava.version>
+            </properties>
+        </profile>
+    </profiles>
     <build>
         <plugins>
             <plugin>
@@ -64,6 +85,16 @@ Import-Package: javax.annotation;version=0.0.0,*
                 </executions>
             </plugin>
             <plugin>
+                <!-- AEM 6.5 runs on Java 8 and 11 and AEM 6.5 LTS on 17 and 21: Java 8 bytecode resolves on all of them. -->
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.11.0</version>
+                <configuration>
+                    <release>8</release>
+                    <testRelease>11</testRelease>
+                </configuration>
+            </plugin>
+            <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
             </plugin>
@@ -80,6 +111,15 @@ Import-Package: javax.annotation;version=0.0.0,*
     </build>
 
     <dependencies>
+        <!-- Oak 1.22 (AEM 6.5) needs Guava 15; pin it before anything that pulls a newer one. -->
+        <dependency><groupId>com.google.guava</groupId><artifactId>guava</artifactId><version>${test.guava.version}</version><scope>test</scope></dependency>
+        <!-- First, so its SLF4J binding wins over the one uber-jar bundles and tests can assert audit lines. -->
+        <dependency><groupId>uk.org.lidalia</groupId><artifactId>slf4j-test</artifactId><scope>test</scope></dependency>
+        <!-- Real Oak plus Sling repoinit at the versions AEM 6.5 SP25 runs, declared first so they win over uber-jar on
+             the test classpath. Used only to execute the shipped repoinit script against pre-existing repository states. -->
+        <dependency><groupId>org.apache.jackrabbit</groupId><artifactId>oak-jcr</artifactId><version>${test.oak.version}</version><scope>test</scope></dependency>
+        <dependency><groupId>org.apache.sling</groupId><artifactId>org.apache.sling.jcr.repoinit</artifactId><version>${test.repoinit.version}</version><scope>test</scope></dependency>
+        <dependency><groupId>org.apache.sling</groupId><artifactId>org.apache.sling.repoinit.parser</artifactId><version>${test.repoinit.parser.version}</version><scope>test</scope></dependency>
         <dependency><groupId>org.osgi</groupId><artifactId>org.osgi.service.metatype.annotations</artifactId></dependency>
         <dependency><groupId>org.osgi</groupId><artifactId>org.osgi.service.component.annotations</artifactId></dependency>
         <dependency><groupId>org.slf4j</groupId><artifactId>slf4j-api</artifactId></dependency>
@@ -89,6 +129,5 @@ Import-Package: javax.annotation;version=0.0.0,*
         <dependency><groupId>org.junit.jupiter</groupId><artifactId>junit-jupiter</artifactId><scope>test</scope></dependency>
         <dependency><groupId>org.mockito</groupId><artifactId>mockito-core</artifactId><scope>test</scope></dependency>
         <dependency><groupId>io.wcm</groupId><artifactId>io.wcm.testing.aem-mock.junit5</artifactId><scope>test</scope></dependency>
-        <dependency><groupId>uk.org.lidalia</groupId><artifactId>slf4j-test</artifactId><scope>test</scope></dependency>
     </dependencies>
 </project>

@@ -1,5 +1,5 @@
 {
   "scripts": [
-    "create service user gradial-obo-state with path system/gradial\ncreate path (oak:Unstructured) /var/gradial/obo/grants\ncreate path (oak:Unstructured) /var/gradial/obo/consents\nset ACL for everyone\n  deny jcr:read on /var/gradial/obo\n  deny jcr:write,rep:write on /var/gradial/obo\nend\nset ACL for gradial-obo-state\n  allow jcr:read,rep:write on /var/gradial/obo\n  allow jcr:read on /home/users restriction(rep:ntNames,rep:AuthorizableFolder,rep:User)\n  deny jcr:read on /home/users restriction(rep:itemNames,rep:password)\n  allow jcr:read on /home/groups restriction(rep:ntNames,rep:AuthorizableFolder,rep:Group)\nend"
+    "create service user gradial-obo-state with path system/gradial\ncreate path (sling:Folder) /var/gradial/obo/grants\ncreate path (sling:Folder) /var/gradial/obo/consents\nset ACL for everyone\n  deny jcr:read,rep:write on /var/gradial/obo\nend\nset ACL for administrators\n  allow jcr:read,rep:write on /var/gradial/obo\nend\nset ACL for gradial-obo-state\n  allow jcr:read,rep:write on /var/gradial/obo\n  allow jcr:read on /home/users restriction(rep:ntNames,rep:AuthorizableFolder,rep:User)\n  deny jcr:read on /home/users restriction(rep:itemNames,rep:password)\n  allow jcr:read on /home/groups restriction(rep:ntNames,rep:AuthorizableFolder,rep:Group,rep:MemberReferencesList,rep:MemberReferences)\nend"
   ]
 }
