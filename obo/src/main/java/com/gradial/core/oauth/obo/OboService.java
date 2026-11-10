@@ -123,6 +123,12 @@ public class OboService implements Runnable {
     String origin() { return config.publicOrigin(); }
     OboPaths paths() { return paths; }
 
+    /** True when the authorize request names this deployment's client; only then may errors go to its callback. */
+    boolean knownClient(String client) { return enabled() && client != null && config.clientId().equals(client); }
+
+    /** True when the callback is registered exactly; only then may errors be redirected to it. */
+    boolean registeredRedirect(String redirect) { return enabled() && redirect != null && redirects.contains(redirect); }
+
     boolean clientMatches(String client, String secret) {
         return enabled() && config.clientId().equals(client) && secret != null && secret.length() <= 512
                 && equal(config.clientSecretSha256(), hash(secret));
@@ -130,11 +136,10 @@ public class OboService implements Runnable {
 
     String consent(String userId, String client, String redirect, String challenge, String state)
             throws RepositoryException {
-        if (!enabled() || !config.clientId().equals(client) || !redirects.contains(redirect)
-                || challenge == null || !challenge.matches("[A-Za-z0-9_-]{43}")
-                || state == null || state.length() < 16 || state.length() > 512) {
-            throw invalid();
-        }
+        if (!knownClient(client)) throw invalid(Refusal.UNKNOWN_CLIENT);
+        if (!registeredRedirect(redirect)) throw invalid(Refusal.UNREGISTERED_REDIRECT);
+        if (challenge == null || !challenge.matches("[A-Za-z0-9_-]{43}")) throw invalid(Refusal.PKCE);
+        if (state == null || state.length() < 16 || state.length() > 512) throw invalid(Refusal.STATE);
         return retrying(session -> {
             requireUser(session, userId);
             String id = recordId(userId);
@@ -158,12 +163,17 @@ public class OboService implements Runnable {
 
     Authorization authorize(String nonce, String userId, boolean approved) throws RepositoryException {
         return retrying(session -> {
-            requireToken(nonce, "gon");
+            try { requireToken(nonce, "gon"); } catch (InvalidDelegationException e) { throw invalid(Refusal.EXPIRED); }
             String id = id(nonce);
             // Consents live under the signed-in user's own folder, so another user's nonce is simply not found.
-            if (!id.startsWith(userKey(userId))) throw invalid();
-            Node consent = live(session, path(CONSENTS, id));
-            if (!userId.equals(string(consent, "userId")) || !matches(consent, "consentHash", nonce)) throw invalid();
+            if (!id.startsWith(userKey(userId))) throw invalid(Refusal.EXPIRED);
+            Node consent;
+            try {
+                consent = live(session, path(CONSENTS, id));
+            } catch (InvalidDelegationException e) {
+                throw invalid(Refusal.EXPIRED);
+            }
+            if (!userId.equals(string(consent, "userId")) || !matches(consent, "consentHash", nonce)) throw invalid(Refusal.EXPIRED);
             requireGrantUser(session, consent);
             String redirect = string(consent, "redirect");
             String state = string(consent, "state");
@@ -400,13 +410,15 @@ public class OboService implements Runnable {
     }
 
     void requireUser(UserManager users, String userId) throws RepositoryException {
-        if (userId == null || "anonymous".equals(userId) || userId.startsWith("oauth-")) throw invalid();
+        if (userId == null || "anonymous".equals(userId) || userId.startsWith("oauth-")) throw invalid(Refusal.ACCOUNT);
         Authorizable authorizable = users.getAuthorizable(userId);
-        if (!(authorizable instanceof User) || ((User) authorizable).isSystemUser() || ((User) authorizable).isDisabled()) throw invalid();
+        if (!(authorizable instanceof User) || ((User) authorizable).isSystemUser() || ((User) authorizable).isDisabled()) {
+            throw invalid(Refusal.ACCOUNT);
+        }
         // Delegation maps to the user's own principals, and for administrators that bypasses every ACL.
         if (!allowAdministrators() && administrator((User) authorizable)) {
             OboAudit.event("delegation_refused", userId, null, "reason=administrator");
-            throw invalid();
+            throw invalid(Refusal.ADMINISTRATOR);
         }
     }
 
@@ -475,10 +487,45 @@ public class OboService implements Runnable {
     }
     private static String string(Node node, String property) throws RepositoryException { return node.getProperty(property).getString(); }
     private static long number(Node node, String property) throws RepositoryException { return node.getProperty(property).getLong(); }
-    static InvalidDelegationException invalid() { return new InvalidDelegationException(); }
+    static InvalidDelegationException invalid() { return new InvalidDelegationException(Refusal.INVALID); }
+    static InvalidDelegationException invalid(Refusal refusal) { return new InvalidDelegationException(refusal); }
     static final class InvalidDelegationException extends RepositoryException {
         private static final long serialVersionUID = 1L;
-        InvalidDelegationException() { super("Invalid or expired delegation"); }
+        private final Refusal refusal;
+        InvalidDelegationException(Refusal refusal) {
+            super("Invalid or expired delegation");
+            this.refusal = refusal;
+        }
+        Refusal refusal() { return refusal; }
+    }
+
+    /**
+     * Why an authorization request was refused, as an OAuth error code plus a description that names
+     * the cause for the person and for Gradial, without revealing configuration.
+     */
+    enum Refusal {
+        UNKNOWN_CLIENT("invalid_request", "client_id is not the one configured on this AEM"),
+        UNREGISTERED_REDIRECT("invalid_request", "redirect_uri is not registered"),
+        RESPONSE_TYPE("unsupported_response_type", "response_type must be code"),
+        PKCE("invalid_request", "PKCE S256 required"),
+        STATE("invalid_request", "state is missing or invalid"),
+        MALFORMED("invalid_request", "a request parameter is missing, repeated or too long"),
+        ADMINISTRATOR("access_denied", "administrators can't connect; sign in to AEM as your own user"),
+        IMPERSONATION("access_denied", "stop impersonating another user in AEM, then connect as yourself"),
+        DELEGATED_SESSION("access_denied", "a Gradial delegated session can't approve another connection"),
+        ACCOUNT("access_denied", "this AEM account can't connect"),
+        DECLINED("access_denied", "the user declined the connection"),
+        EXPIRED("invalid_request", "sign-in expired, start again"),
+        ORIGIN("invalid_request", "the approval did not come from this AEM sign-in page"),
+        DISABLED("temporarily_unavailable", "user delegation is not enabled on this AEM"),
+        UNAVAILABLE("temporarily_unavailable", "AEM could not complete the request, try again"),
+        INVALID("invalid_request", "the request is invalid");
+
+        final String error;
+        final String description;
+        Refusal(String error, String description) { this.error = error; this.description = description; }
+        /** The callback cannot be trusted with these, so they stay on the AEM page (RFC 6749 4.1.2.1). */
+        boolean inPage() { return this == UNKNOWN_CLIENT || this == UNREGISTERED_REDIRECT || this == DISABLED; }
     }
 
     /** Read-only view of stored records, over a JCR session or an Oak root. */

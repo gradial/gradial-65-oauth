@@ -21,6 +21,7 @@ import org.osgi.service.component.annotations.Reference;
         "sling.auth.requirements=-/bin/gradial/obo/token", "sling.auth.requirements=-/bin/gradial/obo/revoke"})
 public class OboServlet extends SlingAllMethodsServlet {
     private static final long serialVersionUID = 1L;
+    private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(OboServlet.class);
     @Reference
     private OboService service;
     @Reference
@@ -30,13 +31,19 @@ public class OboServlet extends SlingAllMethodsServlet {
     protected void doGet(SlingHttpServletRequest request, SlingHttpServletResponse response) throws IOException {
         headers(response);
         if (!"/bin/gradial/obo/authorize".equals(OboPaths.normalize(request.getRequestURI()))) { response.setStatus(405); return; }
+        String user = request.getResourceResolver().getUserID();
+        if (!service.enabled()) { refuse(response, OboService.Refusal.DISABLED, user, null, null); return; }
+        // RFC 6749 4.1.2.1: without a known client and an exactly registered callback, never redirect.
+        String client = single(request, "client_id");
+        String redirect = single(request, "redirect_uri");
+        if (!service.knownClient(client)) { refuse(response, OboService.Refusal.UNKNOWN_CLIENT, user, null, null); return; }
+        if (!service.registeredRedirect(redirect)) { refuse(response, OboService.Refusal.UNREGISTERED_REDIRECT, user, null, null); return; }
+        String state = single(request, "state");
         try {
-            String user = browserUser(request);
-            if (!"code".equals(parameter(request, "response_type"))
-                    || !"S256".equals(parameter(request, "code_challenge_method"))) throw OboService.invalid();
-            String redirect = parameter(request, "redirect_uri");
-            String nonce = service.consent(user, parameter(request, "client_id"), redirect,
-                    parameter(request, "code_challenge"), parameter(request, "state"));
+            user = browserUser(request);
+            if (!"code".equals(single(request, "response_type"))) throw OboService.invalid(OboService.Refusal.RESPONSE_TYPE);
+            if (!"S256".equals(single(request, "code_challenge_method"))) throw OboService.invalid(OboService.Refusal.PKCE);
+            String nonce = service.consent(user, client, redirect, single(request, "code_challenge"), state);
             String callbackOrigin = OboService.checkedUri(redirect).resolve("/").toASCIIString();
             String scriptNonce = OboService.random();
             // AEM's referrer filter must recognize the consent POST; callbacks remain cross-origin private.
@@ -47,8 +54,13 @@ public class OboServlet extends SlingAllMethodsServlet {
                     + "; frame-ancestors 'none'; base-uri 'none'");
             response.setContentType("text/html;charset=UTF-8");
             response.getWriter().write(consentPage(user, nonce, scriptNonce, styleNonce));
-        } catch (OboService.InvalidDelegationException | IllegalArgumentException e) { error(response, 400, "invalid_request"); }
-        catch (RepositoryException e) { error(response, 503, "temporarily_unavailable"); }
+        } catch (OboService.InvalidDelegationException e) {
+            refuse(response, e.refusal(), user, redirect, state);
+        } catch (IllegalArgumentException e) {
+            refuse(response, OboService.Refusal.MALFORMED, user, redirect, state);
+        } catch (RepositoryException e) {
+            refuse(response, OboService.Refusal.UNAVAILABLE, user, redirect, state);
+        }
     }
 
     @Override
@@ -58,16 +70,7 @@ public class OboServlet extends SlingAllMethodsServlet {
         String path = OboPaths.normalize(request.getRequestURI());
         try {
             if ("/bin/gradial/obo/authorize".equals(path)) {
-                String user = browserUser(request);
-                if (!service.origin().equals(request.getHeader("Origin"))) throw OboService.invalid();
-                String approval = parameter(request, "approve");
-                if (!"yes".equals(approval) && !"no".equals(approval)) throw OboService.invalid();
-                OboService.Authorization authorization = service.authorize(parameter(request, "form_nonce"), user, "yes".equals(approval));
-                String separator = authorization.redirect.contains("?") ? "&" : "?";
-                String callback = authorization.redirect + separator + (authorization.code == null
-                        ? "error=access_denied" : "code=" + encode(authorization.code)) + "&state=" + encode(authorization.state);
-                response.setStatus(303);
-                response.setHeader("Location", callback);
+                approve(request, response);
                 return;
             }
             if (!OboClientAuthentication.accepts(request, service)) { response.setHeader("WWW-Authenticate", "Basic realm=\"Gradial OBO\""); error(response, 401, "invalid_client"); return; }
@@ -92,19 +95,78 @@ public class OboServlet extends SlingAllMethodsServlet {
     }
 
     /**
+     * The consent form's POST. Its callback comes from the stored consent, so a refusal before that
+     * consent is found (an expired page, a foreign origin) has no trusted callback and stays on the page.
+     */
+    private void approve(SlingHttpServletRequest request, SlingHttpServletResponse response) throws IOException {
+        String user = request.getResourceResolver().getUserID();
+        try {
+            user = browserUser(request);
+            if (!service.origin().equals(request.getHeader("Origin"))) throw OboService.invalid(OboService.Refusal.ORIGIN);
+            String approval = parameter(request, "approve");
+            if (!"yes".equals(approval) && !"no".equals(approval)) throw OboService.invalid(OboService.Refusal.MALFORMED);
+            OboService.Authorization authorization = service.authorize(parameter(request, "form_nonce"), user, "yes".equals(approval));
+            if (authorization.code == null) {
+                redirectError(response, authorization.redirect, OboService.Refusal.DECLINED, authorization.state);
+                return;
+            }
+            String separator = authorization.redirect.contains("?") ? "&" : "?";
+            response.setStatus(303);
+            response.setHeader("Location", authorization.redirect + separator + "code=" + encode(authorization.code)
+                    + "&state=" + encode(authorization.state));
+        } catch (OboService.InvalidDelegationException e) {
+            refuse(response, e.refusal(), user, null, null);
+        } catch (IllegalArgumentException e) {
+            refuse(response, OboService.Refusal.MALFORMED, user, null, null);
+        } catch (RepositoryException e) {
+            refuse(response, OboService.Refusal.UNAVAILABLE, user, null, null);
+        }
+    }
+
+    /**
+     * Refuses an authorization request: to the registered callback when there is one (so the client's
+     * sign-in window can end the attempt), otherwise on this page. One WARN names the reason.
+     */
+    private void refuse(SlingHttpServletResponse response, OboService.Refusal refusal, String user, String redirect, String state)
+            throws IOException {
+        LOG.warn("User-delegation authorization refused ({}): {} [user={}]", refusal.name().toLowerCase(java.util.Locale.ROOT),
+                refusal.description, user == null ? "-" : user);
+        if (redirect == null || refusal.inPage()) {
+            response.setStatus(refusal == OboService.Refusal.DISABLED || refusal == OboService.Refusal.UNAVAILABLE ? 503 : 400);
+            response.setContentType("application/json;charset=UTF-8");
+            response.getWriter().write("{\"error\":\"" + refusal.error + "\",\"error_description\":\"" + refusal.description + "\"}");
+            return;
+        }
+        redirectError(response, redirect, refusal, state);
+    }
+
+    private static void redirectError(SlingHttpServletResponse response, String redirect, OboService.Refusal refusal, String state) {
+        String separator = redirect.contains("?") ? "&" : "?";
+        response.setStatus(303);
+        response.setHeader("Location", redirect + separator + "error=" + encode(refusal.error) + "&error_description="
+                + encode(refusal.description) + (state == null ? "" : "&state=" + encode(state)));
+    }
+
+    /** A parameter that is present exactly once, or null. */
+    private static String single(SlingHttpServletRequest request, String name) {
+        String[] values = request.getParameterValues(name);
+        return values == null || values.length != 1 || values[0].length() > 2048 ? null : values[0];
+    }
+
+    /**
      * The person consenting must be the person who signed in. A delegated credential or an AEM
      * "Impersonate as" session would let someone approve a grant the named user never saw.
      */
     private String browserUser(SlingHttpServletRequest request) throws RepositoryException {
         String user = request.getResourceResolver().getUserID();
-        if (user == null || "anonymous".equals(user)) throw OboService.invalid();
+        if (user == null || "anonymous".equals(user)) throw OboService.invalid(OboService.Refusal.ACCOUNT);
         if (OboService.SCHEME.equals(request.getAuthType())) {
             OboAudit.event("consent_refused", user, null, "reason=delegated_session");
-            throw OboService.invalid();
+            throw OboService.invalid(OboService.Refusal.DELEGATED_SESSION);
         }
         if (guard.impersonated(request)) {
             OboAudit.event("consent_refused", user, null, "reason=impersonation");
-            throw OboService.invalid();
+            throw OboService.invalid(OboService.Refusal.IMPERSONATION);
         }
         return user;
     }

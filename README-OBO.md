@@ -137,6 +137,23 @@ For development only, an [RDE](https://experienceleague.adobe.com/en/docs/experi
 3. The callback receives `code` and `state`, or `error=access_denied`. Gradial verifies its retained state and initiating user before exchanging the code.
 4. POST `/bin/gradial/obo/token` with `grant_type=authorization_code`, `code`, `redirect_uri` and `code_verifier`. Authenticate with HTTP Basic (URL-encode ID and secret before Base64; the scheme name is case-insensitive), or with form fields `client_id` and `client_secret`. Do not combine methods.
 
+**Authorization errors** follow RFC 6749 §4.1.2.1. Every error carries an `error_description` that names the cause without revealing configuration, and AEM logs one WARN with the reason (never a credential or the `state`).
+
+- If `client_id` is not this deployment's client, or `redirect_uri` is not registered exactly, AEM never redirects: it answers on the page with `{"error":"invalid_request","error_description":"client_id is not the one configured on this AEM"}` (or `"redirect_uri is not registered"`). If delegation is disabled, it answers `temporarily_unavailable` the same way.
+- Otherwise AEM redirects to the registered `redirect_uri` with `error`, `error_description` and the request's `state`, so the client's sign-in window ends the attempt:
+
+| Cause | `error` | `error_description` |
+|---|---|---|
+| `response_type` is not `code` | `unsupported_response_type` | response_type must be code |
+| PKCE missing, or not S256 | `invalid_request` | PKCE S256 required |
+| `state` missing or invalid | `invalid_request` | state is missing or invalid |
+| An administrator is signed in (`allowAdministrators` off) | `access_denied` | administrators can't connect; sign in to AEM as your own user |
+| The session is impersonating another user | `access_denied` | stop impersonating another user in AEM, then connect as yourself |
+| A disabled, system or anonymous account | `access_denied` | this AEM account can't connect |
+| The user chose Cancel | `access_denied` | the user declined the connection |
+
+- When the consent page is submitted after it expired (or from another origin), AEM has no trusted callback for it and answers on the page: `sign-in expired, start again`.
+
 The response contains `access_token`, `refresh_token`, `token_type=GradialOBO` and `expires_in`. Call existing APIs with:
 
 ```http

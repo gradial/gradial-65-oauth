@@ -50,6 +50,9 @@ class OboServletTest {
     void consentAllowsTheValidatedCallbackOriginWithoutExposingItsPathOrQuery() throws Exception {
         String redirect = "https://app.example.com:8443/callback;parameter?tenant=private";
         OboService service = mock(OboService.class);
+        when(service.enabled()).thenReturn(true);
+        when(service.knownClient("client")).thenReturn(true);
+        when(service.registeredRedirect(redirect)).thenReturn(true);
         when(service.consent("writer", "client", redirect, "challenge", "state")).thenReturn("nonce");
         SlingHttpServletResponse response = mock(SlingHttpServletResponse.class);
         StringWriter html = new StringWriter();
@@ -75,6 +78,9 @@ class OboServletTest {
     @Test
     void consentPageStylesWithANonceAndKeepsTheFormContract() throws Exception {
         OboService service = mock(OboService.class);
+        when(service.enabled()).thenReturn(true);
+        when(service.knownClient(any())).thenReturn(true);
+        when(service.registeredRedirect(any())).thenReturn(true);
         when(service.consent(any(), any(), any(), any(), any())).thenReturn("form-nonce");
         SlingHttpServletResponse response = mock(SlingHttpServletResponse.class);
         StringWriter html = new StringWriter();
@@ -108,8 +114,8 @@ class OboServletTest {
     void rejectedConsentKeepsNoReferrerAndNeverAllowsACallbackDestination() throws Exception {
         String redirect = "https://unregistered.example.com/callback";
         OboService service = mock(OboService.class);
-        when(service.consent("writer", "client", redirect, "challenge", "state"))
-                .thenThrow(OboService.invalid());
+        when(service.enabled()).thenReturn(true);
+        when(service.knownClient("client")).thenReturn(true);
         SlingHttpServletResponse response = mock(SlingHttpServletResponse.class);
         when(response.getWriter()).thenReturn(new PrintWriter(new StringWriter()));
 
@@ -119,6 +125,8 @@ class OboServletTest {
         verify(response).setHeader("Referrer-Policy", "no-referrer");
         verify(response, never()).setHeader(eq("Content-Security-Policy"), anyString());
         verify(response, never()).setHeader("Referrer-Policy", "same-origin");
+        verify(response, never()).setHeader(eq("Location"), anyString());
+        verify(service, never()).consent(any(), any(), any(), any(), any());
     }
 
     private static final String ORIGIN = "https://author.example.com";
@@ -154,7 +162,26 @@ class OboServletTest {
         OboService service = mock(OboService.class);
         when(service.enabled()).thenReturn(true);
         when(service.origin()).thenReturn(ORIGIN);
+        when(service.knownClient("client")).thenReturn(true);
+        when(service.registeredRedirect("https://app.example.com/callback")).thenReturn(true);
         return service;
+    }
+
+    /** The error redirect a refusal sent to the registered callback. */
+    private static java.net.URI errorRedirect(SlingHttpServletResponse response) {
+        ArgumentCaptor<String> location = ArgumentCaptor.forClass(String.class);
+        verify(response).setStatus(303);
+        verify(response).setHeader(eq("Location"), location.capture());
+        return java.net.URI.create(location.getValue());
+    }
+
+    private static Map<String, String> query(java.net.URI uri) {
+        Map<String, String> out = new java.util.HashMap<>();
+        for (String pair : uri.getRawQuery().split("&")) {
+            String[] kv = pair.split("=", 2);
+            try { out.put(kv[0], java.net.URLDecoder.decode(kv[1], "UTF-8")); } catch (Exception e) { throw new AssertionError(e); }
+        }
+        return out;
     }
 
     @Test
@@ -169,7 +196,11 @@ class OboServletTest {
         for (SlingHttpServletRequest request : new SlingHttpServletRequest[] {sudoCookie, sudoParameter, impersonator}) {
             SlingHttpServletResponse response = response();
             servlet(service).doGet(request, response);
-            verify(response).setStatus(400);
+            Map<String, String> error = query(errorRedirect(response));
+            assertEquals("access_denied", error.get("error"));
+            assertTrue(error.get("error_description").contains("impersonating"));
+            assertEquals("state", error.get("state"));
+            assertFalse(error.containsKey("code"));
             verify(response, never()).setHeader(eq("Content-Security-Policy"), anyString());
         }
         verify(service, never()).consent(any(), any(), any(), any(), any());
@@ -208,7 +239,7 @@ class OboServletTest {
         when(get.getAuthType()).thenReturn("GradialOBO");
         SlingHttpServletResponse getResponse = response();
         servlet(service).doGet(get, getResponse);
-        verify(getResponse).setStatus(400);
+        assertEquals("access_denied", query(errorRedirect(getResponse)).get("error"));
         SlingHttpServletRequest post = post("/bin/gradial/obo/authorize", "writer", Map.of("approve", "yes", "form_nonce", "nonce"));
         when(post.getHeader("Origin")).thenReturn(ORIGIN);
         when(post.getAuthType()).thenReturn("GradialOBO");
@@ -286,7 +317,12 @@ class OboServletTest {
         when(request.getParameterValues("state")).thenReturn(new String[] {OboFixture.STATE});
         SlingHttpServletResponse response = response();
         servlet(fixture.service).doGet(request, response);
-        verify(response).setStatus(400);
+        java.net.URI callback = errorRedirect(response);
+        assertTrue(callback.toString().startsWith(OboFixture.REDIRECT + "?"));
+        Map<String, String> error = query(callback);
+        assertEquals("access_denied", error.get("error"));
+        assertEquals("administrators can't connect; sign in to AEM as your own user", error.get("error_description"));
+        assertEquals(OboFixture.STATE, error.get("state"));
         assertFalse(body.toString().contains("form_nonce"));
         assertEquals(0, OboFixture.records(fixture.storage, OboService.CONSENTS, 2));
     }
@@ -329,5 +365,111 @@ class OboServletTest {
         servlet(fixture.service).doPost(request, response);
         verify(response, never()).setStatus(400);
         assertTrue(body.toString().contains("\"token_type\":\"GradialOBO\""));
+    }
+
+    @Test
+    void anUnknownClientOrUnregisteredCallbackStaysOnThePageWithADescription() throws Exception {
+        OboService service = mockedService();
+        SlingHttpServletRequest unknownClient = consentRequest("https://app.example.com/callback");
+        when(unknownClient.getParameterValues("client_id")).thenReturn(new String[] {"someone-else"});
+        SlingHttpServletRequest unregistered = consentRequest("https://evil.example/callback");
+        String[][] cases = {{"client_id is not the one configured on this AEM"}, {"redirect_uri is not registered"}};
+        SlingHttpServletRequest[] requests = {unknownClient, unregistered};
+        for (int i = 0; i < requests.length; i++) {
+            SlingHttpServletResponse response = response();
+            servlet(service).doGet(requests[i], response);
+            verify(response).setStatus(400);
+            verify(response, never()).setHeader(eq("Location"), anyString());
+            assertTrue(body.toString().contains("\"error\":\"invalid_request\""));
+            assertTrue(body.toString().contains(cases[i][0]), body.toString());
+        }
+        verify(service, never()).consent(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void protocolErrorsWithAKnownClientAndCallbackGoBackToTheCallback() throws Exception {
+        fixture = new OboFixture();
+        Object[][] cases = {
+            {"response_type", "token", "unsupported_response_type", "response_type must be code"},
+            {"code_challenge_method", "plain", "invalid_request", "PKCE S256 required"},
+            {"code_challenge", "short", "invalid_request", "PKCE S256 required"},
+            {"state", "short", "invalid_request", "state is missing or invalid"}};
+        for (Object[] c : cases) {
+            SlingHttpServletRequest request = consentRequest(OboFixture.REDIRECT);
+            when(request.getResourceResolver().getUserID()).thenReturn(OboFixture.USER);
+            when(request.getParameterValues("client_id")).thenReturn(new String[] {OboFixture.CLIENT});
+            when(request.getParameterValues("code_challenge")).thenReturn(new String[] {OboService.challenge(OboService.random())});
+            when(request.getParameterValues("state")).thenReturn(new String[] {OboFixture.STATE});
+            when(request.getParameterValues((String) c[0])).thenReturn(new String[] {(String) c[1]});
+            SlingHttpServletResponse response = response();
+            servlet(fixture.service).doGet(request, response);
+            Map<String, String> error = query(errorRedirect(response));
+            assertEquals(c[2], error.get("error"), (String) c[0]);
+            assertEquals(c[3], error.get("error_description"), (String) c[0]);
+            assertFalse(error.containsKey("code"));
+        }
+        assertEquals(0, OboFixture.records(fixture.storage, OboService.CONSENTS, 2));
+    }
+
+    @Test
+    void aMissingStateIsReportedAndNotEchoed() throws Exception {
+        fixture = new OboFixture();
+        SlingHttpServletRequest request = consentRequest(OboFixture.REDIRECT);
+        when(request.getResourceResolver().getUserID()).thenReturn(OboFixture.USER);
+        when(request.getParameterValues("client_id")).thenReturn(new String[] {OboFixture.CLIENT});
+        when(request.getParameterValues("code_challenge")).thenReturn(new String[] {OboService.challenge(OboService.random())});
+        when(request.getParameterValues("state")).thenReturn(null);
+        SlingHttpServletResponse response = response();
+        servlet(fixture.service).doGet(request, response);
+        Map<String, String> error = query(errorRedirect(response));
+        assertEquals("state is missing or invalid", error.get("error_description"));
+        assertFalse(error.containsKey("state"));
+    }
+
+    @Test
+    void anExpiredConsentPageStaysOnThePageWithSignInExpired() throws Exception {
+        fixture = new OboFixture();
+        SlingHttpServletRequest request = post("/bin/gradial/obo/authorize", OboFixture.USER,
+                Map.of("approve", "yes", "form_nonce", "gon_" + OboService.recordId(OboFixture.USER) + "." + OboService.random()));
+        when(request.getHeader("Origin")).thenReturn("https://author.example.com");
+        SlingHttpServletResponse response = response();
+        servlet(fixture.service).doPost(request, response);
+        verify(response).setStatus(400);
+        verify(response, never()).setHeader(eq("Location"), anyString());
+        assertTrue(body.toString().contains("sign-in expired, start again"), body.toString());
+    }
+
+    @Test
+    void decliningRedirectsAccessDeniedWithADescriptionAndState() throws Exception {
+        fixture = new OboFixture();
+        String nonce = fixture.service.consent(OboFixture.USER, OboFixture.CLIENT, OboFixture.REDIRECT,
+                OboService.challenge(OboService.random()), OboFixture.STATE);
+        SlingHttpServletRequest request = post("/bin/gradial/obo/authorize", OboFixture.USER, Map.of("approve", "no", "form_nonce", nonce));
+        when(request.getHeader("Origin")).thenReturn("https://author.example.com");
+        SlingHttpServletResponse response = response();
+        servlet(fixture.service).doPost(request, response);
+        Map<String, String> error = query(errorRedirect(response));
+        assertEquals("access_denied", error.get("error"));
+        assertEquals("the user declined the connection", error.get("error_description"));
+        assertEquals(OboFixture.STATE, error.get("state"));
+    }
+
+    @Test
+    void eachRefusalLogsOneWarningWithItsReason() throws Exception {
+        uk.org.lidalia.slf4jtest.TestLogger log = uk.org.lidalia.slf4jtest.TestLoggerFactory.getTestLogger(OboServlet.class);
+        log.clearAll();
+        fixture = new OboFixture();
+        when(fixture.user.isAdmin()).thenReturn(true);
+        SlingHttpServletRequest request = consentRequest(OboFixture.REDIRECT);
+        when(request.getResourceResolver().getUserID()).thenReturn(OboFixture.USER);
+        when(request.getParameterValues("client_id")).thenReturn(new String[] {OboFixture.CLIENT});
+        when(request.getParameterValues("code_challenge")).thenReturn(new String[] {OboService.challenge(OboService.random())});
+        when(request.getParameterValues("state")).thenReturn(new String[] {OboFixture.STATE});
+        servlet(fixture.service).doGet(request, response());
+        java.util.List<uk.org.lidalia.slf4jtest.LoggingEvent> warnings = new java.util.ArrayList<>();
+        for (uk.org.lidalia.slf4jtest.LoggingEvent e : log.getAllLoggingEvents()) if (e.getLevel() == uk.org.lidalia.slf4jext.Level.WARN) warnings.add(e);
+        assertEquals(1, warnings.size());
+        assertTrue(warnings.get(0).getArguments().contains("administrator"));
+        assertFalse(warnings.get(0).getArguments().toString().contains(OboFixture.STATE), "the state is not logged");
     }
 }
