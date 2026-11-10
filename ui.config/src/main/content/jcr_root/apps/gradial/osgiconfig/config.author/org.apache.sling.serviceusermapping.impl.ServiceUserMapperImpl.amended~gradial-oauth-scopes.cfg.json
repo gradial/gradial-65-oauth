@@ -1,0 +1,5 @@
+{
+  "user.mapping": [
+    "gradial.core:scope-check=[gradial-oauth-scope-reader]"
+  ]
+}

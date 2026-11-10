@@ -12,6 +12,8 @@
     <filter root="/apps/gradial/osgiconfig/config.author/com.gradial.core.oauth.scopes.DynamicScope~site-xf-author.cfg.json" mode="update"/>
     <filter root="/apps/gradial/osgiconfig/config.author/com.gradial.core.oauth.scopes.DynamicScope~tags-author.cfg.json" mode="update"/>
     <filter root="/apps/gradial/osgiconfig/config.author/com.gradial.core.oauth.scopes.DynamicScope~upload-assets.cfg.json" mode="update"/>
+    <filter root="/apps/gradial/osgiconfig/config.author/org.apache.sling.jcr.repoinit.RepositoryInitializer~gradial-oauth-scopes.cfg.json" mode="update"/>
+    <filter root="/apps/gradial/osgiconfig/config.author/org.apache.sling.serviceusermapping.impl.ServiceUserMapperImpl.amended~gradial-oauth-scopes.cfg.json" mode="update"/>
     <filter root="/apps/gradial/osgiconfig/config.prod/org.apache.sling.commons.log.LogManager.factory.config~gradial.cfg.json" mode="update"/>
     <filter root="/apps/gradial/osgiconfig/config.stage/org.apache.sling.commons.log.LogManager.factory.config~gradial.cfg.json" mode="update"/>
     <filter root="/apps/gradial/osgiconfig/config/org.apache.sling.commons.log.LogManager.factory.config~gradial.cfg.json" mode="update"/>
