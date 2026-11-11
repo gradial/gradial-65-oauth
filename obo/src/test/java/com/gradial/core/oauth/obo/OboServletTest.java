@@ -472,4 +472,51 @@ class OboServletTest {
         assertTrue(warnings.get(0).getArguments().contains("administrator"));
         assertFalse(warnings.get(0).getArguments().toString().contains(OboFixture.STATE), "the state is not logged");
     }
+    @Test
+    void missingOrRepeatedTokenParametersAreInvalidRequestNotInvalidGrant() throws Exception {
+        fixture = new OboFixture();
+        String auth = basic(OboFixture.CLIENT, OboFixture.SECRET);
+        Map<String, String>[] bodies = new Map[] {Map.of(), Map.of("grant_type", "refresh_token")};
+        for (Map<String, String> parameters : bodies) {
+            SlingHttpServletRequest request = post("/bin/gradial/obo/token", "anonymous", parameters);
+            when(request.getHeader("Authorization")).thenReturn(auth);
+            SlingHttpServletResponse response = response();
+            servlet(fixture.service).doPost(request, response);
+            verify(response).setStatus(400);
+            assertTrue(body.toString().contains("\"invalid_request\""), body.toString());
+        }
+        SlingHttpServletRequest repeated = post("/bin/gradial/obo/token", "anonymous", Map.of("grant_type", "refresh_token"));
+        when(repeated.getHeader("Authorization")).thenReturn(auth);
+        when(repeated.getParameterValues("refresh_token")).thenReturn(new String[] {"a", "b"});
+        SlingHttpServletResponse response = response();
+        servlet(fixture.service).doPost(repeated, response);
+        assertTrue(body.toString().contains("\"invalid_request\""), body.toString());
+        SlingHttpServletRequest unknownGrant = post("/bin/gradial/obo/token", "anonymous", Map.of("grant_type", "password"));
+        when(unknownGrant.getHeader("Authorization")).thenReturn(auth);
+        response = response();
+        servlet(fixture.service).doPost(unknownGrant, response);
+        assertTrue(body.toString().contains("\"unsupported_grant_type\""), body.toString());
+        SlingHttpServletRequest badRefresh = post("/bin/gradial/obo/token", "anonymous",
+                Map.of("grant_type", "refresh_token", "refresh_token", "gor_" + OboService.recordId(OboFixture.USER) + "." + OboService.random()));
+        when(badRefresh.getHeader("Authorization")).thenReturn(auth);
+        response = response();
+        servlet(fixture.service).doPost(badRefresh, response);
+        assertTrue(body.toString().contains("\"invalid_grant\""), body.toString());
+    }
+
+    @Test
+    void aMissingOrRepeatedResponseTypeIsInvalidRequest() throws Exception {
+        fixture = new OboFixture();
+        for (String[] responseType : new String[][] {null, {"code", "token"}}) {
+            SlingHttpServletRequest request = consentRequest(OboFixture.REDIRECT);
+            when(request.getResourceResolver().getUserID()).thenReturn(OboFixture.USER);
+            when(request.getParameterValues("client_id")).thenReturn(new String[] {OboFixture.CLIENT});
+            when(request.getParameterValues("code_challenge")).thenReturn(new String[] {OboService.challenge(OboService.random())});
+            when(request.getParameterValues("state")).thenReturn(new String[] {OboFixture.STATE});
+            when(request.getParameterValues("response_type")).thenReturn(responseType);
+            SlingHttpServletResponse response = response();
+            servlet(fixture.service).doGet(request, response);
+            assertEquals("invalid_request", query(errorRedirect(response)).get("error"));
+        }
+    }
 }

@@ -158,4 +158,60 @@ class OboAuthenticationFilterTest {
             verify(chain).doFilter(request, response);
         }
     }
+    /** A delegated POST to an allowed resource that carries these Sling POST parameters. */
+    private SlingHttpServletRequest postWith(String resourcePath, String[][] parameters) {
+        SlingHttpServletRequest request = request("GradialOBO " + TOKEN, "writer", TOKEN, "POST", resourcePath);
+        org.apache.sling.api.resource.Resource resource = mock(org.apache.sling.api.resource.Resource.class);
+        when(resource.getPath()).thenReturn(resourcePath);
+        when(request.getResource()).thenReturn(resource);
+        java.util.Map<String, org.apache.sling.api.request.RequestParameter[]> map = new java.util.LinkedHashMap<>();
+        for (String[] p : parameters) {
+            org.apache.sling.api.request.RequestParameter value = mock(org.apache.sling.api.request.RequestParameter.class);
+            when(value.isFormField()).thenReturn(!"FILE".equals(p.length > 2 ? p[2] : ""));
+            when(value.getString()).thenReturn(p[1]);
+            map.put(p[0], new org.apache.sling.api.request.RequestParameter[] {value});
+        }
+        org.apache.sling.api.request.RequestParameterMap parameterMap = mock(org.apache.sling.api.request.RequestParameterMap.class);
+        when(parameterMap.entrySet()).thenReturn(map.entrySet());
+        when(request.getRequestParameterMap()).thenReturn(parameterMap);
+        return request;
+    }
+
+    @Test
+    void slingPostTargetsOutsideTheAddressedResourceAreCheckedToo() throws Exception {
+        String[][][] bypasses = {
+            {{":operation", "delete"}, {":applyTo", "/etc/cloudservices/customer"}},
+            {{":operation", "delete"}, {":applyTo", "../../../etc/cloudservices/customer"}},
+            {{":operation", "delete"}, {":applyTo", "/etc/cloudservices/*"}},
+            {{":operation", "move"}, {":dest", "/etc/packages/x"}},
+            {{":operation", "copy"}, {":dest", "../../../crx/x"}},
+            {{"/etc/cloudservices/customer/prop", "value"}},
+            {{"../../../home/users/a/author/profile/email", "x"}},
+            {{"./imported@MoveFrom", "/etc/cloudservices/customer"}},
+            {{"./copy@CopyFrom", "../../../etc/packages/x.zip"}}};
+        for (String[][] parameters : bypasses) {
+            HttpServletResponse response = mock(HttpServletResponse.class);
+            FilterChain chain = mock(FilterChain.class);
+            filter(service()).doFilter(postWith("/content/site/en", parameters), response, chain);
+            refused(response, chain);
+        }
+    }
+
+    @Test
+    void ordinaryContentWritesWithPathValuesAndUploadsStillWork() throws Exception {
+        String[][][] allowed = {
+            {{"jcr:title", "Hello"}, {"fileReference", "/content/dam/site/image.jpg"}},
+            {{"jcr:content/cq:cloudserviceconfigs", "/etc/cloudservices/launch/site"}},
+            {{"path", "/etc/cloudservices/customer"}},
+            {{"./jcr:content/jcr:title", "Hi"}, {":redirect", "/crx/should-not-matter"}},
+            {{":operation", "delete"}, {":applyTo", "/content/site/en/old-page"}},
+            {{"file", "/etc/packages/looks-like-a-path", "FILE"}}};
+        for (String[][] parameters : allowed) {
+            SlingHttpServletRequest request = postWith("/content/site/en", parameters);
+            HttpServletResponse response = mock(HttpServletResponse.class);
+            FilterChain chain = mock(FilterChain.class);
+            filter(service()).doFilter(request, response, chain);
+            verify(chain).doFilter(request, response);
+        }
+    }
 }

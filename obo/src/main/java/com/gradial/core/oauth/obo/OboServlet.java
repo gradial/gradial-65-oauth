@@ -41,7 +41,9 @@ public class OboServlet extends SlingAllMethodsServlet {
         String state = single(request, "state");
         try {
             user = browserUser(request);
-            if (!"code".equals(single(request, "response_type"))) throw OboService.invalid(OboService.Refusal.RESPONSE_TYPE);
+            String responseType = single(request, "response_type");
+            if (responseType == null) throw OboService.invalid(OboService.Refusal.MALFORMED);
+            if (!"code".equals(responseType)) throw OboService.invalid(OboService.Refusal.RESPONSE_TYPE);
             if (!"S256".equals(single(request, "code_challenge_method"))) throw OboService.invalid(OboService.Refusal.PKCE);
             String nonce = service.consent(user, client, redirect, single(request, "code_challenge"), state);
             String callbackOrigin = OboService.checkedUri(redirect).resolve("/").toASCIIString();
@@ -90,6 +92,9 @@ public class OboServlet extends SlingAllMethodsServlet {
             response.setContentType("application/json;charset=UTF-8");
             response.getWriter().write("{\"access_token\":\"" + tokens.access + "\",\"refresh_token\":\""
                     + tokens.refresh + "\",\"token_type\":\"GradialOBO\",\"expires_in\":" + tokens.expiresIn + "}");
+        } catch (MalformedParameterException e) {
+            // RFC 6749 5.2: a missing or repeated parameter is a malformed request, not a rejected grant.
+            error(response, 400, "invalid_request");
         } catch (OboService.InvalidDelegationException | IllegalArgumentException e) { error(response, 400, "invalid_grant"); }
         catch (RepositoryException e) { error(response, 503, "temporarily_unavailable"); }
     }
@@ -173,8 +178,14 @@ public class OboServlet extends SlingAllMethodsServlet {
 
     private static String parameter(SlingHttpServletRequest request, String name) {
         String[] values = request.getParameterValues(name);
-        if (values == null || values.length != 1 || values[0].length() > 2048) throw new IllegalArgumentException("Invalid parameter");
+        if (values == null || values.length != 1 || values[0].length() > 2048) throw new MalformedParameterException(name);
         return values[0];
+    }
+
+    /** A required parameter is missing, repeated or too long. */
+    static final class MalformedParameterException extends IllegalArgumentException {
+        private static final long serialVersionUID = 1L;
+        MalformedParameterException(String name) { super("Missing, repeated or oversized parameter " + name); }
     }
     private static String encode(String value) {
         try { return URLEncoder.encode(value, "UTF-8"); }

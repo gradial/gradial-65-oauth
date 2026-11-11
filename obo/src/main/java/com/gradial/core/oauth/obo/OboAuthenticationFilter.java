@@ -20,7 +20,8 @@ import org.osgi.service.component.annotations.ReferencePolicy;
 /**
  * Last line for delegated Sling requests: the session must be the one the delegation login module
  * opened for this request's credential (a cookie handler or a sudo switch cannot substitute another),
- * and the resolved resource path must not be a denied surface. No repository read.
+ * and no path the request can act on (see {@link OboRequestTargets}) may be a denied surface. No
+ * repository read.
  */
 @Component(service = Filter.class,
         property = {"sling.filter.scope=REQUEST", "service.ranking:Integer=10000"})
@@ -55,12 +56,13 @@ public class OboAuthenticationFilter implements Filter {
             refuse(httpResponse);
             return;
         }
-        String resourcePath = slingRequest.getRequestPathInfo().getResourcePath();
-        if (resourcePath != null && current.paths().refuses(slingRequest.getMethod(), resourcePath)) {
-            OboAudit.event("path_refused", slingRequest.getRemoteUser(), null,
-                    "method=" + slingRequest.getMethod() + " path=" + resourcePath);
-            refuse(httpResponse);
-            return;
+        for (String target : OboRequestTargets.of(slingRequest)) {
+            if (current.paths().refuses(slingRequest.getMethod(), target)) {
+                OboAudit.event("path_refused", slingRequest.getRemoteUser(), null,
+                        "method=" + slingRequest.getMethod() + " path=" + target);
+                refuse(httpResponse);
+                return;
+            }
         }
         httpResponse.setHeader("Cache-Control", "no-store");
         chain.doFilter(request, response);

@@ -12,6 +12,10 @@
   1.2.2 snapshots shipped that file (a repoinit script creating gradial-oauth-scope-reader). This package no
   longer contains it, and a replace root with no content makes FileVault delete exactly that one file on
   upgrade, so the old script cannot run beside ScopeReaderRepositoryInitializer. 1.2.0 never shipped it.
+
+  RepositoryInitializer~gradial-obo.cfg.json is in replace mode for the same reason: pre-release OBO snapshots
+  shipped it (a repoinit script for gradial-obo-service), and OboRepositoryInitializer now does that setup
+  with JCR/Jackrabbit APIs. 1.2.0 never shipped it either.
 -->
 <workspaceFilter version="1.0">
     <filter root="/apps/gradial/osgiconfig/config.author/com.gradial.core.oauth.scopes.DynamicScope~launch-author.cfg.json" mode="update"/>
@@ -25,7 +29,10 @@
     <!-- Removed file of this package (see above): replace mode with no content deletes exactly this one file. -->
     <filter root="/apps/gradial/osgiconfig/config.author/org.apache.sling.jcr.repoinit.RepositoryInitializer~gradial-oauth-scopes.cfg.json" mode="replace"/>
     <filter root="/apps/gradial/osgiconfig/config.author/org.apache.sling.serviceusermapping.impl.ServiceUserMapperImpl.amended~gradial-oauth-scopes.cfg.json" mode="update"/>
-    <filter root="/apps/gradial/osgiconfig/config.author/org.apache.sling.jcr.repoinit.RepositoryInitializer~gradial-obo.cfg.json" mode="update"/>
+    <filter root="/apps/gradial/osgiconfig/config.author/com.gradial.core.oauth.obo.OboRepositoryInitializer.cfg.json" mode="update"/>
+    <filter root="/apps/gradial/osgiconfig/config.author/org.apache.sling.commons.log.LogManager.factory.config~gradial-obo-audit.cfg.json" mode="update"/>
+    <!-- Removed file of this package (see above): replace mode with no content deletes exactly this one file. -->
+    <filter root="/apps/gradial/osgiconfig/config.author/org.apache.sling.jcr.repoinit.RepositoryInitializer~gradial-obo.cfg.json" mode="replace"/>
     <filter root="/apps/gradial/osgiconfig/config.author/org.apache.sling.serviceusermapping.impl.ServiceUserMapperImpl.amended~gradial-obo.cfg.json" mode="update"/>
     <filter root="/apps/gradial/osgiconfig/config.prod/org.apache.sling.commons.log.LogManager.factory.config~gradial.cfg.json" mode="update"/>
     <filter root="/apps/gradial/osgiconfig/config.stage/org.apache.sling.commons.log.LogManager.factory.config~gradial.cfg.json" mode="update"/>

@@ -56,10 +56,12 @@ class RepositoryInitScriptTest {
     void close() { admin.logout(); }
 
     static String shippedScript() throws Exception {
-        String json = new String(Files.readAllBytes(Paths.get("../ui.config/src/main/content/jcr_root/apps/gradial/osgiconfig/"
-                + "config.author/org.apache.sling.jcr.repoinit.RepositoryInitializer~gradial-obo.cfg.json")), StandardCharsets.UTF_8);
-        String body = json.substring(json.indexOf("[") + 1, json.lastIndexOf("]")).trim();
-        return body.substring(1, body.length() - 1).replace("\\n", "\n").replace("\\\"", "\"");
+        StringBuilder text = new StringBuilder();
+        try (java.io.Reader reader = OboRepositoryInitializer.script()) {
+            char[] buffer = new char[4096];
+            for (int n; (n = reader.read(buffer)) > 0;) text.append(buffer, 0, n);
+        }
+        return text.toString();
     }
 
     private void apply(String script) throws Exception {
@@ -160,5 +162,64 @@ class RepositoryInitScriptTest {
             assertTrue(member, "the consent-time administrator check must see overflow members");
             assertFalse(service.propertyExists(overflow.getPath() + "/rep:password"), "password hashes stay unreadable");
         } finally { service.logout(); }
+    }
+    private OboRepositoryInitializer initializer() throws Exception {
+        OboRepositoryInitializer initializer = new OboRepositoryInitializer();
+        for (String[] f : new String[][] {{"parser", ""}, {"processor", ""}}) {
+            java.lang.reflect.Field field = OboRepositoryInitializer.class.getDeclaredField(f[0]);
+            field.setAccessible(true);
+            field.set(initializer, "parser".equals(f[0]) ? new RepoInitParserService() : new JcrRepoInitOpsProcessorImpl());
+        }
+        return initializer;
+    }
+
+    private org.apache.sling.jcr.api.SlingRepository sling() throws Exception {
+        org.apache.sling.jcr.api.SlingRepository sling = org.mockito.Mockito.mock(org.apache.sling.jcr.api.SlingRepository.class);
+        org.mockito.Mockito.when(sling.loginAdministrative(null))
+                .thenAnswer(call -> repository.login(new SimpleCredentials("admin", "admin".toCharArray())));
+        return sling;
+    }
+
+    @Test
+    void theInitializerSetsUpTheStoreAndAppliesTwice() throws Exception {
+        assertTrue(initializer().apply(sling()));
+        assertTrue(initializer().apply(sling()));
+        admin.refresh(false);
+        assertTrue(admin.nodeExists(OboService.ROOT));
+        assertTrue(((User) ((JackrabbitSession) admin).getUserManager().getAuthorizable(OboRepositoryInitializer.SERVICE_USER)).isSystemUser());
+    }
+
+    @Test
+    void aNormalUserWithTheServiceUserIdIsLeftUntouchedAndNothingIsApplied() throws Exception {
+        UserManager users = ((JackrabbitSession) admin).getUserManager();
+        users.createUser(OboRepositoryInitializer.SERVICE_USER, "customer-password");
+        admin.save();
+        String path = users.getAuthorizable(OboRepositoryInitializer.SERVICE_USER).getPath();
+        assertFalse(initializer().apply(sling()));
+        assertDoesNotThrow(() -> initializer().processRepository(sling()));
+        admin.refresh(false);
+        User account = (User) users.getAuthorizable(OboRepositoryInitializer.SERVICE_USER);
+        assertFalse(account.isSystemUser(), "the customer's account is not converted");
+        assertEquals(path, account.getPath(), "nor moved or recreated");
+        assertFalse(admin.nodeExists(OboService.STORE), "nothing was set up");
+        repository.login(new SimpleCredentials(OboRepositoryInitializer.SERVICE_USER, "customer-password".toCharArray())).logout();
+    }
+
+    @Test
+    void aGroupWithTheServiceUserIdIsLeftUntouchedAndNothingIsApplied() throws Exception {
+        ((JackrabbitSession) admin).getUserManager().createGroup(OboRepositoryInitializer.SERVICE_USER);
+        admin.save();
+        assertFalse(initializer().apply(sling()));
+        assertDoesNotThrow(() -> initializer().processRepository(sling()));
+        admin.refresh(false);
+        assertTrue(((JackrabbitSession) admin).getUserManager().getAuthorizable(OboRepositoryInitializer.SERVICE_USER).isGroup());
+        assertFalse(admin.nodeExists(OboService.STORE));
+    }
+
+    @Test
+    void aFailingRepositoryNeverMakesTheInitializerThrow() throws Exception {
+        org.apache.sling.jcr.api.SlingRepository broken = org.mockito.Mockito.mock(org.apache.sling.jcr.api.SlingRepository.class);
+        org.mockito.Mockito.when(broken.loginAdministrative(null)).thenThrow(new javax.jcr.RepositoryException("unavailable"));
+        assertDoesNotThrow(() -> initializer().processRepository(broken));
     }
 }

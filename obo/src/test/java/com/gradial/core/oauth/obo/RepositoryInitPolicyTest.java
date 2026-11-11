@@ -12,9 +12,7 @@ import org.junit.jupiter.api.Test;
 /** Guards the least-privilege shape of the service user that the Author configuration creates. */
 class RepositoryInitPolicyTest {
     private static String script() throws Exception {
-        Path file = Paths.get("../ui.config/src/main/content/jcr_root/apps/gradial/osgiconfig/config.author/"
-                + "org.apache.sling.jcr.repoinit.RepositoryInitializer~gradial-obo.cfg.json");
-        return new String(Files.readAllBytes(file), StandardCharsets.UTF_8).replace("\\n", "\n");
+        return RepositoryInitScriptTest.shippedScript();
     }
 
     @Test
