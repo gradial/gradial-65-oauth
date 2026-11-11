@@ -247,4 +247,49 @@ class DynamicScopeRegistrationTest {
         assertTrue(errors().isEmpty());
         assertEquals(1, log.getAllLoggingEvents().stream().filter(e -> e.getLevel() == uk.org.lidalia.slf4jext.Level.WARN).count());
     }
+    @Test
+    void theListenerIsAnExternalListenerSoClusterPeersReconcile() {
+        DynamicScopeRegistrar scope = registrar("site_author", "/content/site");
+        assertTrue(scope instanceof org.apache.sling.api.resource.observation.ExternalResourceChangeListener);
+    }
+
+    @Test
+    void aSlowStaleCheckCannotUndoANewerRegistration() throws Exception {
+        java.util.concurrent.CountDownLatch checking = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+        ResourceResolverFactory real = context.getService(ResourceResolverFactory.class);
+        java.util.concurrent.atomic.AtomicBoolean first = new java.util.concurrent.atomic.AtomicBoolean(true);
+        ResourceResolverFactory slowFirst = mock(ResourceResolverFactory.class);
+        when(slowFirst.getServiceResourceResolver(any())).thenAnswer(call -> {
+            if (first.getAndSet(false)) {
+                // The activation check reads MISSING, then stalls before deciding.
+                org.apache.sling.api.resource.ResourceResolver missing = mock(org.apache.sling.api.resource.ResourceResolver.class);
+                checking.countDown();
+                assertTrue(release.await(5, java.util.concurrent.TimeUnit.SECONDS));
+                return missing;
+            }
+            return real.getServiceResourceResolver(call.getArgument(0));
+        });
+        DynamicOAuthScopeConfiguration config = mock(DynamicOAuthScopeConfiguration.class);
+        when(config.scopeName()).thenReturn("late");
+        when(config.resourcePath()).thenReturn("/content/late");
+        when(config.requiredPrivileges()).thenReturn(new String[] {"jcr:read"});
+        DynamicScopeRegistrar registrar = new DynamicScopeRegistrar();
+        java.lang.reflect.Field f = DynamicScopeRegistrar.class.getDeclaredField("resolverFactory");
+        f.setAccessible(true);
+        f.set(registrar, slowFirst);
+
+        Thread activation = new Thread(() -> registrar.activate(context.bundleContext(), config));
+        activation.start();
+        assertTrue(checking.await(5, java.util.concurrent.TimeUnit.SECONDS));
+        path("/content/late");
+        Thread listener = new Thread(() -> registrar.onChange(change(ResourceChange.ChangeType.ADDED, "/content/late")));
+        listener.start();
+        long deadline = System.currentTimeMillis() + 2000;
+        while (listener.getState() != Thread.State.BLOCKED && listener.isAlive() && System.currentTimeMillis() < deadline) Thread.sleep(5);
+        release.countDown();
+        activation.join(5000);
+        listener.join(5000);
+        assertEquals(Collections.singletonList("late"), registeredNames(), "the newer PRESENT check must win");
+    }
 }

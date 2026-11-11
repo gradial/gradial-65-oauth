@@ -1,5 +1,0 @@
-{
-  "scripts": [
-    "create service user gradial-oauth-scope-reader with path system/gradial\nset ACL for gradial-oauth-scope-reader\n  allow rep:readNodes on /\nend"
-  ]
-}

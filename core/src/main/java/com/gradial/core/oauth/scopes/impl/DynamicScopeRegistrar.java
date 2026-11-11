@@ -15,6 +15,7 @@ import org.apache.sling.api.resource.LoginException;
 import org.apache.sling.api.resource.ResourceResolver;
 import org.apache.sling.api.resource.ResourceResolverFactory;
 import org.apache.sling.api.resource.observation.ResourceChange;
+import org.apache.sling.api.resource.observation.ExternalResourceChangeListener;
 import org.apache.sling.api.resource.observation.ResourceChangeListener;
 import org.osgi.framework.Bundle;
 import org.osgi.framework.BundleContext;
@@ -53,6 +54,9 @@ import com.gradial.core.oauth.scopes.DynamicScope;
  * Without that service user the scope registers as before, with one warning, so a deployment that
  * lacks this package's configurations keeps its scopes.
  *
+ * <p>It is an {@link ExternalResourceChangeListener}, so a path created or removed on another node of a
+ * clustered Author reconciles here too.
+ *
  * <p>Deliberately has no {@code @Modified}: Granite keys scopes by the name read at bind time, so a
  * configuration change must deactivate and reactivate this component to re-register under the new name.
  */
@@ -64,7 +68,7 @@ import com.gradial.core.oauth.scopes.DynamicScope;
         immediate = true
 )
 @Designate(ocd = DynamicOAuthScopeConfiguration.class, factory = true)
-public class DynamicScopeRegistrar implements ResourceChangeListener {
+public class DynamicScopeRegistrar implements ResourceChangeListener, ExternalResourceChangeListener {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(DynamicScopeRegistrar.class);
     /** Service user mapping of this bundle used only to test that resource paths exist. */
@@ -149,7 +153,14 @@ public class DynamicScopeRegistrar implements ResourceChangeListener {
 
     /** Registers the scope when its path exists and its name is free; unregisters it otherwise. */
     void reconcile(boolean logMissing) {
-        Existence existence = existence();
+        // The check and the decision happen under one per-scope lock, so a slower, older check can never
+        // undo a newer one. REGISTRATION is always taken inside it, never the other way round.
+        synchronized (this) {
+            reconcile(existence(), logMissing);
+        }
+    }
+
+    private void reconcile(Existence existence, boolean logMissing) {
         synchronized (REGISTRATION) {
             if (!active) return;
             if (existence == Existence.MISSING) {

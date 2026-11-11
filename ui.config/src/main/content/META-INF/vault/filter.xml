@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
   One root per shipped file, in update mode: installing writes exactly these files and never removes
-  anything else, so customer or third-party configurations in the same folders survive install,
+  anything else (a file this package used to ship is listed in replace mode, which removes only that file), so customer or third-party configurations in the same folders survive install,
   reinstall, upgrade and uninstall.
 -->
 <workspaceFilter version="1.0">
@@ -12,7 +12,9 @@
     <filter root="/apps/gradial/osgiconfig/config.author/com.gradial.core.oauth.scopes.DynamicScope~site-xf-author.cfg.json" mode="update"/>
     <filter root="/apps/gradial/osgiconfig/config.author/com.gradial.core.oauth.scopes.DynamicScope~tags-author.cfg.json" mode="update"/>
     <filter root="/apps/gradial/osgiconfig/config.author/com.gradial.core.oauth.scopes.DynamicScope~upload-assets.cfg.json" mode="update"/>
-    <filter root="/apps/gradial/osgiconfig/config.author/org.apache.sling.jcr.repoinit.RepositoryInitializer~gradial-oauth-scopes.cfg.json" mode="update"/>
+    <filter root="/apps/gradial/osgiconfig/config.author/com.gradial.core.oauth.scopes.impl.ScopeReaderRepositoryInitializer.cfg.json" mode="update"/>
+    <!-- Removed file of this package: replace mode with no content deletes exactly this one file on upgrade. -->
+    <filter root="/apps/gradial/osgiconfig/config.author/org.apache.sling.jcr.repoinit.RepositoryInitializer~gradial-oauth-scopes.cfg.json" mode="replace"/>
     <filter root="/apps/gradial/osgiconfig/config.author/org.apache.sling.serviceusermapping.impl.ServiceUserMapperImpl.amended~gradial-oauth-scopes.cfg.json" mode="update"/>
     <filter root="/apps/gradial/osgiconfig/config.prod/org.apache.sling.commons.log.LogManager.factory.config~gradial.cfg.json" mode="update"/>
     <filter root="/apps/gradial/osgiconfig/config.stage/org.apache.sling.commons.log.LogManager.factory.config~gradial.cfg.json" mode="update"/>
