@@ -519,4 +519,27 @@ class OboServletTest {
             assertEquals("invalid_request", query(errorRedirect(response)).get("error"));
         }
     }
+    @Test
+    void emptyRequiredOAuthParametersAreInvalidRequest() throws Exception {
+        fixture = new OboFixture();
+        String auth = basic(OboFixture.CLIENT, OboFixture.SECRET);
+        for (Map<String, String> parameters : java.util.List.of(Map.of("grant_type", ""), Map.of("grant_type", "refresh_token", "refresh_token", ""),
+                Map.of("grant_type", "authorization_code", "code", "", "redirect_uri", OboFixture.REDIRECT, "code_verifier", OboService.random() + OboService.random()))) {
+            SlingHttpServletRequest request = post("/bin/gradial/obo/token", "anonymous", parameters);
+            when(request.getHeader("Authorization")).thenReturn(auth);
+            SlingHttpServletResponse response = response();
+            servlet(fixture.service).doPost(request, response);
+            verify(response).setStatus(400);
+            assertTrue(body.toString().contains("\"invalid_request\""), parameters + " -> " + body);
+        }
+        SlingHttpServletRequest authorize = consentRequest(OboFixture.REDIRECT);
+        when(authorize.getResourceResolver().getUserID()).thenReturn(OboFixture.USER);
+        when(authorize.getParameterValues("client_id")).thenReturn(new String[] {OboFixture.CLIENT});
+        when(authorize.getParameterValues("code_challenge")).thenReturn(new String[] {OboService.challenge(OboService.random())});
+        when(authorize.getParameterValues("state")).thenReturn(new String[] {OboFixture.STATE});
+        when(authorize.getParameterValues("response_type")).thenReturn(new String[] {""});
+        SlingHttpServletResponse response = response();
+        servlet(fixture.service).doGet(authorize, response);
+        assertEquals("invalid_request", query(errorRedirect(response)).get("error"));
+    }
 }

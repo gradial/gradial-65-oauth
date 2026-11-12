@@ -59,11 +59,19 @@ final class OboPaths {
     List<String> denied() { return denied; }
     List<String> writeDenied() { return writeDenied; }
 
-    /** True when a delegated request for this raw URI or resolved resource path must be refused. */
+    /** True when a delegated request for this raw request URI must be refused (URI decoding applies). */
     boolean refuses(String method, String path) {
         String normalized = normalize(path);
-        if (normalized == null) return true;
-        String lower = normalized.toLowerCase(Locale.ROOT);
+        return normalized == null || refusesRepositoryPath(method, normalized);
+    }
+
+    /**
+     * True when a delegated request may not act on this exact repository path. The path is compared as
+     * given: no URI decoding, no query stripping, no dot-segment resolution. Callers pass only paths
+     * already proven absolute and normalized.
+     */
+    boolean refusesRepositoryPath(String method, String path) {
+        String lower = path.toLowerCase(Locale.ROOT);
         boolean read = "GET".equalsIgnoreCase(method) || "HEAD".equalsIgnoreCase(method);
         if (read) {
             for (String allowed : READABLE) if (covers(allowed, lower)) return false;

@@ -115,7 +115,13 @@ A delegated session carries the user's whole AEM authority, but Gradial needs on
 - Default `deniedPaths`: `/crx`, `/system`, `/etc/packages`, `/libs/granite/security`, `/libs/cq/security`, `/libs/granite/operations`, `/libs/granite/backup`, `/libs/granite/cluster`, `/libs/granite/distribution`, `/etc/cloudservices`, and for non-GET methods only (`write:` prefix) `/home` and `/etc/replication`.
 - Always readable with GET or HEAD: `/libs/granite/security/currentuser`, `whoami` and `userinfo`, and `/libs/cq/security/userinfo`, which Gradial uses to confirm who it acts as.
 
-For Sling POST requests the check also covers every other path the request can act on: `:applyTo` items (absolute, relative, or with a trailing `/*`), `:dest`, absolute and relative property names (for example `/etc/x/prop` or `../../home/...`), and `@MoveFrom` / `@CopyFrom` sources. Ordinary property values are not treated as targets, so a page can still store a path such as `cq:cloudserviceconfigs=/etc/cloudservices/...`. Other POST servlets that take a target path in a parameter value (WCM commands, replication) are bounded by the user's own ACLs, as in AEM itself.
+For Sling POST requests the check also covers every other path the request can act on. Delegated sessions accept those targets only in forms whose final repository path is exactly known, and each final path is checked against the list:
+
+- `:applyTo`, `:dest`, `@CopyFrom` and `@MoveFrom` values must be absolute, already-normalized paths: no `?`, `#`, `//`, `.` or `..` segments, and no relative path. A `:dest` ending in `/` (where Sling picks the final child name) and a wildcard `:applyTo` are refused.
+- Absolute property names (`/content/x/prop`) must be normalized the same way. Relative names (`jcr:title`, `./jcr:content/x`, `./@CopyFrom`) are accepted without `.` or `..` segments and are checked where they land, below the addressed resource.
+- Anything else is refused with 403 and `{"error":"access_denied","error_description":"<parameter> ..."}` naming the parameter.
+
+Gradial's own requests use these forms: copy and move with an absolute `:dest`, `./@CopyFrom` with an absolute source, the Forms copy with an absolute `:dest`, and delete of the addressed resource. Ordinary property values are not targets, so a page can still store a path such as `cq:cloudserviceconfigs=/etc/cloudservices/...`. Other POST servlets that take a target path in a parameter value (WCM commands, replication) are bounded by the user's own ACLs, as in AEM itself.
 
 Setting `deniedPaths` replaces the defaults (the always-refused list still applies).
 

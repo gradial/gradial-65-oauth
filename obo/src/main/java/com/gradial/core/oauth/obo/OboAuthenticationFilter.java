@@ -56,16 +56,43 @@ public class OboAuthenticationFilter implements Filter {
             refuse(httpResponse);
             return;
         }
-        for (String target : OboRequestTargets.of(slingRequest)) {
-            if (current.paths().refuses(slingRequest.getMethod(), target)) {
-                OboAudit.event("path_refused", slingRequest.getRemoteUser(), null,
-                        "method=" + slingRequest.getMethod() + " path=" + target);
-                refuse(httpResponse);
-                return;
+        String method = slingRequest.getMethod();
+        try {
+            for (OboRequestTargets.Target target : OboRequestTargets.of(slingRequest)) {
+                if (current.paths().refusesRepositoryPath(method, target.path)) {
+                    OboAudit.event("path_refused", slingRequest.getRemoteUser(), null,
+                            "method=" + method + " parameter=" + target.parameter + " path=" + target.path);
+                    refuseTarget(httpResponse, target.parameter + " targets a path that Gradial delegated sessions cannot change");
+                    return;
+                }
             }
+        } catch (OboRequestTargets.UnprovableTarget e) {
+            OboAudit.event("path_refused", slingRequest.getRemoteUser(), null,
+                    "method=" + method + " parameter=" + e.parameter + " reason=unprovable_target");
+            refuseTarget(httpResponse, e.getMessage());
+            return;
         }
         httpResponse.setHeader("Cache-Control", "no-store");
         chain.doFilter(request, response);
+    }
+
+    /** 403 that names the parameter, so a client can tell a refused target from an AEM permission error. */
+    private static void refuseTarget(HttpServletResponse response, String description) throws IOException {
+        response.setStatus(HttpServletResponse.SC_FORBIDDEN);
+        response.setHeader("Cache-Control", "no-store");
+        response.setContentType("application/json;charset=UTF-8");
+        response.getWriter().write("{\"error\":\"access_denied\",\"error_description\":\"" + json(description) + "\"}");
+        response.flushBuffer();
+    }
+
+    private static String json(String value) {
+        StringBuilder out = new StringBuilder(value.length());
+        for (char c : value.toCharArray()) {
+            if (c == '"' || c == '\\') out.append('\\').append(c);
+            else if (c < 0x20) out.append(' ');
+            else out.append(c);
+        }
+        return out.toString();
     }
 
     private static void refuse(HttpServletResponse response) throws IOException {

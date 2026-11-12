@@ -155,7 +155,8 @@ public class OboServlet extends SlingAllMethodsServlet {
     /** A parameter that is present exactly once, or null. */
     private static String single(SlingHttpServletRequest request, String name) {
         String[] values = request.getParameterValues(name);
-        return values == null || values.length != 1 || values[0].length() > 2048 ? null : values[0];
+        // RFC 6749 3.1 and 3.2: a parameter sent without a value is treated as omitted.
+        return values == null || values.length != 1 || values[0].isEmpty() || values[0].length() > 2048 ? null : values[0];
     }
 
     /**
@@ -178,14 +179,17 @@ public class OboServlet extends SlingAllMethodsServlet {
 
     private static String parameter(SlingHttpServletRequest request, String name) {
         String[] values = request.getParameterValues(name);
-        if (values == null || values.length != 1 || values[0].length() > 2048) throw new MalformedParameterException(name);
+        // RFC 6749 3.1 and 3.2: a parameter sent without a value is treated as omitted.
+        if (values == null || values.length != 1 || values[0].isEmpty() || values[0].length() > 2048) {
+            throw new MalformedParameterException(name);
+        }
         return values[0];
     }
 
-    /** A required parameter is missing, repeated or too long. */
+    /** A required parameter is missing, empty, repeated or too long. */
     static final class MalformedParameterException extends IllegalArgumentException {
         private static final long serialVersionUID = 1L;
-        MalformedParameterException(String name) { super("Missing, repeated or oversized parameter " + name); }
+        MalformedParameterException(String name) { super("Missing, empty, repeated or oversized parameter " + name); }
     }
     private static String encode(String value) {
         try { return URLEncoder.encode(value, "UTF-8"); }
