@@ -44,7 +44,7 @@ Add `com.gradial.core.oauth.obo.OboService.cfg.json` to your own project's `conf
 - **Secret.** Generate at least 32 random bytes (for example `openssl rand -base64 32`), keep the raw value in Gradial's encrypted credential storage, and put only its SHA-256 in the configuration. The package cannot measure the secret's entropy from its hash. Never use a user's password. Because only a hash is stored, Granite CryptoSupport is not needed.
 - **Origin.** `publicOrigin` has no path or trailing slash and matches the Author origin users open in their browser.
 - **Administrators.** Optional `"allowAdministrators": true` lets `admin` and members of `administrators` connect. Leave it off: delegation hands the connected user's principals to Gradial, and for an administrator that bypasses every ACL. With it off, such users cannot consent, and a grant held by a user who later becomes an administrator stops authenticating on the next request.
-- **Denied paths.** Optional `deniedPaths` (see [Denied paths](#denied-paths)).
+- **Refused endpoints.** A fixed list; not configurable (see [Refused endpoints](#refused-endpoints)). A `deniedPaths` value left from an earlier version is ignored with one WARN.
 
 Which changes end existing grants: changing `clientId` or the client secret ends every grant (use this as a kill switch). Changing callbacks, `publicOrigin` or `accessTokenSeconds` does not. Lowering `grantSeconds` shortens live grants; raising it never extends one.
 
@@ -107,23 +107,24 @@ Earlier builds shipped this setup as `org.apache.sling.jcr.repoinit.RepositoryIn
 | Existing `/conf`, `/content`, `/etc` | Nothing | Not covered by any filter or repoinit statement. |
 | Uninstall | Packages removed | Customer content was never covered, so uninstall cannot remove it. Repoinit content stays; see above. |
 
-## Denied paths
+## Refused endpoints
 
-A delegated session carries the user's whole AEM authority, but Gradial needs only content APIs. Delegated requests to these paths are refused with 403, even for a user who could use them in a browser. Each entry covers the path, its descendants and its selector or extension forms. Matching is case-insensitive, on the decoded and normalized request path (checked before login, so it covers non-Sling contexts such as the Web Console) and on the resolved resource path (so `/etc/map` aliases are covered).
+A delegated session acts with the consenting user's own AEM ACLs. Content access, including every Sling POST operation, WCM command and replication request, is exactly what that user could do in a browser; Gradial does not narrow it further. Earlier drafts tried to refuse configurable content paths by re-deriving Sling POST targets from request parameters. Three review rounds showed that such a guard cannot match `SlingPostServlet`'s own resolution (request suffixes, `@` in property names, multipart values read as strings, `:operation=import`, recursive deletes of an ancestor, and other POST servlets that take paths in values), so it was removed. Request bodies and parameters are not inspected.
 
-- Always refused, cannot be configured away: `/bin/gradial/obo`, `/oauth`, `/libs/granite/oauth`. These mint or manage credentials, for example a Granite OAuth grant that would survive disconnecting Gradial.
-- Default `deniedPaths`: `/crx`, `/system`, `/etc/packages`, `/libs/granite/security`, `/libs/cq/security`, `/libs/granite/operations`, `/libs/granite/backup`, `/libs/granite/cluster`, `/libs/granite/distribution`, `/etc/cloudservices`, and for non-GET methods only (`write:` prefix) `/home` and `/etc/replication`.
-- Always readable with GET or HEAD: `/libs/granite/security/currentuser`, `whoami` and `userinfo`, and `/libs/cq/security/userinfo`, which Gradial uses to confirm who it acts as.
+What remains is a fixed, non-configurable list of credential and administration endpoints. A delegated request to any of them is refused with 403, even for a user who could use them in a browser. Each entry covers the path, its descendants and its selector or extension forms. Matching is case-insensitive, on the decoded and normalized request path (checked before login, so it also covers non-Sling servlets such as the Web Console) and on the resolved Sling resource path (so an `/etc/map`, `sling:alias` or vanity mapping onto one of them is refused too).
 
-For Sling POST requests the check also covers every other path the request can act on. Delegated sessions accept those targets only in forms whose final repository path is exactly known, and each final path is checked against the list:
+| Prefix | Why |
+|---|---|
+| `/bin/gradial/obo` | This extension's own authorize, token and revoke endpoints. A delegated token must never mint, refresh, consent to or revoke delegation. |
+| `/oauth` | Granite OAuth server endpoints (for example `/oauth/token`). They mint AEM OAuth tokens that would outlive disconnecting Gradial. |
+| `/libs/granite/oauth` | Granite OAuth consent and client management (`/libs/granite/oauth/authorize`, `content/clients.html`, `newclient.html`). |
+| `/crx/packmgr` | Package Manager. A package can write code, OSGi configuration and ACLs, and repoinit configurations it carries run as the repository administrator. |
+| `/crx/de` | CRXDE Lite, a generic repository editor. |
+| `/crx/server` | JCR remoting (WebDAV and DavEx): a second, non-Sling write protocol, including access control changes. |
+| `/libs/granite/security` | User, group, permission and keystore administration. GET and HEAD stay allowed for `currentuser`, `whoami` and `userinfo`, which Gradial reads to confirm whom it acts as. |
+| `/system/console` | The Felix web console. |
 
-- `:applyTo`, `:dest`, `@CopyFrom` and `@MoveFrom` values must be absolute, already-normalized paths: no `?`, `#`, `//`, `.` or `..` segments, and no relative path. A `:dest` ending in `/` (where Sling picks the final child name) and a wildcard `:applyTo` are refused.
-- Absolute property names (`/content/x/prop`) must be normalized the same way. Relative names (`jcr:title`, `./jcr:content/x`, `./@CopyFrom`) are accepted without `.` or `..` segments and are checked where they land, below the addressed resource.
-- Anything else is refused with 403 and `{"error":"access_denied","error_description":"<parameter> ..."}` naming the parameter.
-
-Gradial's own requests use these forms: copy and move with an absolute `:dest`, `./@CopyFrom` with an absolute source, the Forms copy with an absolute `:dest`, and delete of the addressed resource. Ordinary property values are not targets, so a page can still store a path such as `cq:cloudserviceconfigs=/etc/cloudservices/...`. Other POST servlets that take a target path in a parameter value (WCM commands, replication) are bounded by the user's own ACLs, as in AEM itself.
-
-Setting `deniedPaths` replaces the defaults (the always-refused list still applies).
+No other Gradial request uses these paths.
 
 ## AEM as a Cloud Service deployment
 
@@ -132,7 +133,7 @@ Cloud runtime and IMS entitlement revocation have not yet been verified for this
 For the package-based candidate, an AEM developer must:
 
 1. Include the separate OBO-capable `io.github.gradial:gradial.obo` bundle in the existing project's Author install location. The current candidate is `1.2.2-SNAPSHOT`, not a verified published Cloud release.
-2. Put the supplied `org.apache.sling.serviceusermapping.impl.ServiceUserMapperImpl.amended~gradial-obo.cfg.json` and `org.apache.sling.jcr.repoinit.RepositoryInitializer~gradial-obo.cfg.json` under that project's `config.author`. Keep the filters limited to those configurations and the bundle; do not replace unrelated `/apps/gradial` code.
+2. Put the supplied `org.apache.sling.serviceusermapping.impl.ServiceUserMapperImpl.amended~gradial-obo.cfg.json` and `com.gradial.core.oauth.obo.OboRepositoryInitializer.cfg.json` (it enables the repository initializer, which has `configurationPolicy = REQUIRE`) under that project's `config.author`. Keep the filters limited to those configurations and the bundle; do not replace unrelated `/apps/gradial` code.
 3. Add the `OboService` configuration above with a dedicated client, trusted Author origin and exact callback. This client belongs to this package; it is not an Adobe Developer Console OAuth Web App registration.
 4. Commit and deploy through the customer's existing Cloud Manager code pipeline. [Cloud Package Manager](https://experienceleague.adobe.com/en/docs/experience-manager-cloud-service/content/implementing/developer-tools/package-manager) cannot deploy this Java code.
 5. Verify the bundle and foundation services, then test with an IMS-backed non-admin user whose normal Author product profile and content permissions are already configured.
