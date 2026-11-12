@@ -109,6 +109,30 @@ Import-Package: javax.annotation;version=0.0.0,\
                     </archive>
                 </configuration>
             </plugin>
+            <plugin>
+                <!-- The Oak bundles each supported AEM line runs, copied (not on any classpath) for
+                     ImportPackageResolutionTest: AEM 6.5 SP25 runs Oak 1.22.24, AEM 6.5 LTS runs Oak 1.88.0. -->
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <version>3.6.1</version>
+                <executions>
+                    <execution>
+                        <id>platform-oak-bundles</id>
+                        <phase>generate-test-resources</phase>
+                        <goals><goal>copy</goal></goals>
+                        <configuration>
+                            <artifactItems>
+                                <artifactItem><groupId>org.apache.jackrabbit</groupId><artifactId>oak-api</artifactId><version>1.22.24</version><outputDirectory>${project.build.directory}/platforms/aem65-sp25</outputDirectory></artifactItem>
+                                <artifactItem><groupId>org.apache.jackrabbit</groupId><artifactId>oak-core-spi</artifactId><version>1.22.24</version><outputDirectory>${project.build.directory}/platforms/aem65-sp25</outputDirectory></artifactItem>
+                                <artifactItem><groupId>org.apache.jackrabbit</groupId><artifactId>oak-security-spi</artifactId><version>1.22.24</version><outputDirectory>${project.build.directory}/platforms/aem65-sp25</outputDirectory></artifactItem>
+                                <artifactItem><groupId>org.apache.jackrabbit</groupId><artifactId>oak-api</artifactId><version>1.88.0</version><outputDirectory>${project.build.directory}/platforms/aem65-lts</outputDirectory></artifactItem>
+                                <artifactItem><groupId>org.apache.jackrabbit</groupId><artifactId>oak-core-spi</artifactId><version>1.88.0</version><outputDirectory>${project.build.directory}/platforms/aem65-lts</outputDirectory></artifactItem>
+                                <artifactItem><groupId>org.apache.jackrabbit</groupId><artifactId>oak-security-spi</artifactId><version>1.88.0</version><outputDirectory>${project.build.directory}/platforms/aem65-lts</outputDirectory></artifactItem>
+                            </artifactItems>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
         </plugins>
     </build>
 
@@ -128,6 +152,7 @@ Import-Package: javax.annotation;version=0.0.0,\
         <dependency><groupId>javax.jcr</groupId><artifactId>jcr</artifactId></dependency>
         <dependency><groupId>javax.servlet</groupId><artifactId>javax.servlet-api</artifactId></dependency>
         <dependency><groupId>com.adobe.aem</groupId><artifactId>uber-jar</artifactId></dependency>
+        <dependency><groupId>org.apache.felix</groupId><artifactId>org.apache.felix.framework</artifactId><version>7.0.5</version><scope>test</scope></dependency>
         <dependency><groupId>org.junit.jupiter</groupId><artifactId>junit-jupiter</artifactId><scope>test</scope></dependency>
         <dependency><groupId>org.mockito</groupId><artifactId>mockito-core</artifactId><scope>test</scope></dependency>
         <dependency><groupId>io.wcm</groupId><artifactId>io.wcm.testing.aem-mock.junit5</artifactId><scope>test</scope></dependency>

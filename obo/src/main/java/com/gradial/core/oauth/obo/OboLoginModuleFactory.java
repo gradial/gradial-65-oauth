@@ -13,6 +13,8 @@ import javax.security.auth.login.LoginException;
 import javax.security.auth.spi.LoginModule;
 
 import org.apache.felix.jaas.LoginModuleFactory;
+import org.apache.jackrabbit.api.security.user.Authorizable;
+import org.apache.jackrabbit.api.security.user.User;
 import org.apache.jackrabbit.api.security.user.UserManager;
 import org.apache.jackrabbit.oak.api.PropertyState;
 import org.apache.jackrabbit.oak.api.Root;
@@ -20,9 +22,6 @@ import org.apache.jackrabbit.oak.api.Tree;
 import org.apache.jackrabbit.oak.api.Type;
 import org.apache.jackrabbit.oak.spi.security.authentication.AbstractLoginModule;
 import org.apache.jackrabbit.oak.spi.security.authentication.AuthInfoImpl;
-import org.apache.jackrabbit.oak.spi.security.principal.AdminPrincipal;
-import org.apache.jackrabbit.oak.spi.security.principal.SystemPrincipal;
-import org.apache.jackrabbit.oak.spi.security.principal.SystemUserPrincipal;
 import org.apache.jackrabbit.util.ISO8601;
 import org.osgi.service.component.annotations.Component;
 import org.osgi.service.component.annotations.Reference;
@@ -76,7 +75,7 @@ public class OboLoginModuleFactory implements LoginModuleFactory {
                 if (resolved == null || resolved.isEmpty()) throw new LoginException("Delegated user has no principals");
                 // Authoritative check on the full principal set (nested, overflow and dynamic membership). It runs on
                 // every request, so it also covers users who became administrators after consent.
-                if (!service.allowAdministrators() && administrative(resolved)) {
+                if (!service.allowAdministrators() && (administrative(resolved) || administrative(users.getAuthorizable(validated)))) {
                     OboAudit.event("delegation_refused", validated, OboService.id(presented.token()), "reason=administrator");
                     throw new LoginException("Administrative accounts cannot use delegation");
                 }
@@ -92,12 +91,28 @@ public class OboLoginModuleFactory implements LoginModuleFactory {
             }
         }
 
+        /**
+         * Membership in {@code administrators}, read from the full resolved principal set (nested, overflow and
+         * dynamic membership).
+         */
         static boolean administrative(Set<? extends Principal> principals) {
             for (Principal principal : principals) {
-                if (principal instanceof AdminPrincipal || principal instanceof SystemPrincipal
-                        || principal instanceof SystemUserPrincipal || "administrators".equals(principal.getName())) return true;
+                if ("administrators".equals(principal.getName())) return true;
             }
             return false;
+        }
+
+        /**
+         * The admin user, or a system (service) user. Read through Jackrabbit's user API rather than Oak's
+         * {@code org.apache.jackrabbit.oak.spi.security.principal} classes ({@code AdminPrincipal},
+         * {@code SystemUserPrincipal}): that package is exported at 1.8 by AEM 6.5 and at 2.1.1 by AEM 6.5 LTS
+         * (oak-security-spi 1.88.0), so no single import range covers both. {@code SystemPrincipal} belongs only to
+         * Oak's internal system subject, which a delegated login can never carry.
+         */
+        static boolean administrative(Authorizable authorizable) throws RepositoryException {
+            if (!(authorizable instanceof User)) return authorizable != null;
+            User user = (User) authorizable;
+            return user.isAdmin() || user.isSystemUser();
         }
 
         @Override

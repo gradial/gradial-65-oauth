@@ -71,7 +71,7 @@ class OboLoginModuleTest {
         when(config.accessTokenSeconds()).thenReturn(300);
         when(config.grantSeconds()).thenReturn(86400);
         service = new OboService();
-        service.activate(config);
+        service.activate(config, java.util.Collections.emptyMap());
     }
 
     @AfterEach
@@ -164,7 +164,7 @@ class OboLoginModuleTest {
         assertThrows(LoginException.class, () -> module(new Subject(), new OboCredentials(expired)).login());
         String rotated = grant();
         when(config.clientSecretSha256()).thenReturn(OboService.hash("rotated"));
-        service.activate(config);
+        service.activate(config, java.util.Collections.emptyMap());
         assertThrows(LoginException.class, () -> module(new Subject(), new OboCredentials(rotated)).login());
     }
 
@@ -202,16 +202,20 @@ class OboLoginModuleTest {
     }
 
     @Test
-    void administrativePrincipalTypesAreRecognised() {
-        Principal admin = new org.apache.jackrabbit.oak.spi.security.principal.AdminPrincipal() {
-            @Override public String getName() { return "admin"; }
-        };
-        Principal system = new org.apache.jackrabbit.oak.spi.security.principal.SystemUserPrincipal() {
-            @Override public String getName() { return "some-service"; }
-        };
-        assertTrue(OboLoginModuleFactory.DelegationLoginModule.administrative(Set.of(admin)));
-        assertTrue(OboLoginModuleFactory.DelegationLoginModule.administrative(Set.of(system)));
+    void administratorsMembershipIsRecognisedFromPrincipals() {
         assertTrue(OboLoginModuleFactory.DelegationLoginModule.administrative(Set.<Principal>of(() -> "administrators")));
         assertFalse(OboLoginModuleFactory.DelegationLoginModule.administrative(Set.<Principal>of(() -> "authors")));
+    }
+
+    @Test
+    void theAdminUserAndSystemUsersAreRecognisedThroughTheUserApi() throws Exception {
+        org.apache.jackrabbit.api.security.user.UserManager users = ((org.apache.jackrabbit.api.JackrabbitSession) admin).getUserManager();
+        users.createSystemUser("zz-some-service", null);
+        users.createUser("zz-plain-author", "pw");
+        admin.save();
+        assertTrue(OboLoginModuleFactory.DelegationLoginModule.administrative(users.getAuthorizable("admin")));
+        assertTrue(OboLoginModuleFactory.DelegationLoginModule.administrative(users.getAuthorizable("zz-some-service")));
+        assertFalse(OboLoginModuleFactory.DelegationLoginModule.administrative(users.getAuthorizable("zz-plain-author")));
+        assertFalse(OboLoginModuleFactory.DelegationLoginModule.administrative((org.apache.jackrabbit.api.security.user.Authorizable) null));
     }
 }
