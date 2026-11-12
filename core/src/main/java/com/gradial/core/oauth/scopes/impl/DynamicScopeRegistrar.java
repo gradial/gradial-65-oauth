@@ -6,6 +6,7 @@ import java.util.Dictionary;
 import java.util.Hashtable;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
 
 import javax.jcr.RepositoryException;
 import javax.jcr.Session;
@@ -17,6 +18,7 @@ import org.apache.sling.api.resource.ResourceResolverFactory;
 import org.apache.sling.api.resource.observation.ResourceChange;
 import org.apache.sling.api.resource.observation.ExternalResourceChangeListener;
 import org.apache.sling.api.resource.observation.ResourceChangeListener;
+import org.apache.sling.serviceusermapping.ServiceUserMapped;
 import org.osgi.framework.Bundle;
 import org.osgi.framework.BundleContext;
 import org.osgi.framework.InvalidSyntaxException;
@@ -27,6 +29,9 @@ import org.osgi.service.component.annotations.Component;
 import org.osgi.service.component.annotations.ConfigurationPolicy;
 import org.osgi.service.component.annotations.Deactivate;
 import org.osgi.service.component.annotations.Reference;
+import org.osgi.service.component.annotations.ReferenceCardinality;
+import org.osgi.service.component.annotations.ReferencePolicy;
+import org.osgi.service.component.annotations.ReferencePolicyOption;
 import org.osgi.service.metatype.annotations.Designate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -36,26 +41,36 @@ import com.gradial.core.oauth.config.DynamicOAuthScopeConfiguration;
 import com.gradial.core.oauth.scopes.DynamicScope;
 
 /**
- * Registers one {@link DynamicScope} with Granite OAuth per factory configuration, but only while the
- * scope can work.
+ * Registers one {@link DynamicScope} with Granite OAuth per factory configuration, and reports when the
+ * scope's resource path is missing.
  *
  * <ul>
- * <li><b>Resource path must exist.</b> Granite grants a token nothing at all when one requested
- * scope's path is missing, and still issues the token. An unregistered scope instead fails the token
- * request with {@code invalid_scope}. A Sling {@link ResourceChangeListener} on the path registers the
- * scope when the path is created and unregisters it when the path is removed, without a restart. At
- * token issue the scope checks the path again, which also covers removal of an ancestor.</li>
- * <li><b>Name must be free.</b> Granite keeps one scope per name: a later registration replaces an
- * earlier one and unregistering either removes the name. A name another scope already holds is
- * therefore refused with an error naming both, instead of silently replacing it.</li>
+ * <li><b>Name must be free.</b> Granite OAuth 1.1.34 keeps one scope per name: a later registration
+ * replaces an earlier one and unregistering either removes the name. A name another scope service already
+ * holds is therefore refused with one ERROR naming both, instead of silently replacing it.</li>
+ * <li><b>Missing path is reported, never refused.</b> If the resource path does not exist, or is not
+ * visible to {@value #READER}, the scope still registers and one ERROR names the scope and the path. Granite
+ * then issues tokens for it as before. Visibility never decides registration, so a read-permission setting
+ * cannot turn into a broken integration; the user-facing message is Gradial's own health check.
+ * An existing path is hidden from the reader only by a deny entry for that user itself, or by a closed user
+ * group ({@code rep:cugPolicy}) on the path or an ancestor where CUG evaluation is enabled (Oak's
+ * {@code CugConfiguration} has {@code cugEnabled=false} by default, as on Author). A {@code deny jcr:read}
+ * for {@code everyone} does not hide it: Oak evaluates entries for user principals before entries for group
+ * principals at every level (oak-core 1.88.0 {@code CompiledPermissionImpl.java:436-444},
+ * {@code chainedIterator(userEntries, groupEntries)}), so the reader's own {@code allow rep:readNodes} on
+ * {@code /} wins.</li>
  * </ul>
  *
+ * <p>The path is checked at activation, when a Sling {@link ResourceChangeListener} reports the path or an
+ * ancestor ADDED or REMOVED, when the reader becomes available ({@link ScopeReaderReady} or the
+ * {@code scope-check} {@link ServiceUserMapped} binds), and when Granite reads the resource path to issue a
+ * token (rate-limited). ERROR and INFO are logged only on a change of state.
+ *
  * <p>Existence is read as the {@value #SUBSERVICE} service user, which has {@code rep:readNodes} only.
- * Without that service user the scope registers as before, with one warning, so a deployment that
- * lacks this package's configurations keeps its scopes.
+ * Until that user can log in, the scope registers with one WARN that the path is unchecked.
  *
  * <p>It is an {@link ExternalResourceChangeListener}, so a path created or removed on another node of a
- * clustered Author reconciles here too.
+ * clustered Author is reported here too.
  *
  * <p>Deliberately has no {@code @Modified}: Granite keys scopes by the name read at bind time, so a
  * configuration change must deactivate and reactivate this component to re-register under the new name.
@@ -76,32 +91,69 @@ public class DynamicScopeRegistrar implements ResourceChangeListener, ExternalRe
     static final String READER = "gradial-oauth-scope-reader";
     /** Service property naming the scope, for diagnostics in the web console. */
     static final String SCOPE_NAME_PROPERTY = "gradial.oauth.scope.name";
+    /** At most one token-time ERROR per scope in this interval. */
+    static final long TOKEN_ERROR_INTERVAL_MS = 15 * 60 * 1000L;
     /** Serializes check-and-register across all configurations, so two cannot claim one name at once. */
     private static final Object REGISTRATION = new Object();
 
     @Reference
     private ResourceResolverFactory resolverFactory;
 
-    private DynamicOAuthScopeConfiguration config;
+    private volatile DynamicOAuthScopeConfiguration config;
     private BundleContext bundleContext;
     private ConfiguredScope scope;
     private ServiceRegistration<?> listener;
     private ServiceRegistration<?> registration;
     private boolean active;
+    /** Last known PRESENT or MISSING; null until a check could log in. Guarded by this. */
+    private Existence known;
+    private boolean warnedUnchecked;
+    private final AtomicLong lastTokenError = new AtomicLong(Long.MIN_VALUE / 2);
 
     @Activate
     protected void activate(BundleContext context, DynamicOAuthScopeConfiguration config) {
         this.bundleContext = context;
-        this.config = config;
         this.scope = new ConfiguredScope(this, config);
         synchronized (REGISTRATION) {
             active = true;
         }
+        this.config = config;
         Dictionary<String, Object> properties = new Hashtable<>();
         properties.put(ResourceChangeListener.PATHS, listenerPaths(config.resourcePath()));
         properties.put(ResourceChangeListener.CHANGES, new String[] {"ADDED", "REMOVED"});
         listener = context.registerService(ResourceChangeListener.class.getName(), this, properties);
-        reconcile(true);
+        reconcile();
+    }
+
+    /**
+     * Re-checks the path once {@link ScopeReaderRepositoryInitializer} has created the reader. Optional and
+     * dynamic, so a missing or colliding reader never blocks the scope; greedy, so a marker registered after
+     * activation is bound.
+     */
+    @Reference(service = ScopeReaderReady.class, cardinality = ReferenceCardinality.OPTIONAL,
+            policy = ReferencePolicy.DYNAMIC, policyOption = ReferencePolicyOption.GREEDY)
+    void bindScopeReaderReady(ScopeReaderReady ready) {
+        if (config != null) reconcile();
+    }
+
+    void unbindScopeReaderReady(ScopeReaderReady ready) {
+        // Nothing to undo: the scope stays registered.
+    }
+
+    /**
+     * Re-checks the path when this bundle's {@value #SUBSERVICE} mapping becomes active, which covers a mapping
+     * configuration that arrives after the user already exists. Sling's ServiceUserMappedBundleFilter shows each
+     * bundle only its own mappings, so the subservice name is enough as target.
+     */
+    @Reference(service = ServiceUserMapped.class, target = "(" + ServiceUserMapped.SUBSERVICENAME + "=" + SUBSERVICE + ")",
+            cardinality = ReferenceCardinality.OPTIONAL, policy = ReferencePolicy.DYNAMIC,
+            policyOption = ReferencePolicyOption.GREEDY)
+    void bindServiceUserMapped(ServiceUserMapped mapped) {
+        if (config != null) reconcile();
+    }
+
+    void unbindServiceUserMapped(ServiceUserMapped mapped) {
+        // Nothing to undo: the scope stays registered.
     }
 
     /**
@@ -145,55 +197,67 @@ public class DynamicScopeRegistrar implements ResourceChangeListener, ExternalRe
         for (ResourceChange change : changes) {
             String changed = change.getPath();
             if (path.equals(changed) || path.startsWith(changed + "/")) {
-                reconcile(false);
+                reconcile();
                 return;
             }
         }
     }
 
-    /** Registers the scope when its path exists and its name is free; unregisters it otherwise. */
-    void reconcile(boolean logMissing) {
-        // The check and the decision happen under one per-scope lock, so a slower, older check can never
-        // undo a newer one. REGISTRATION is always taken inside it, never the other way round.
+    /** Registers the scope if its name is free, and logs a change of its path's state. */
+    void reconcile() {
+        // The check and the logging happen under one per-scope lock, so a slower, older check can never be
+        // reported after a newer one. REGISTRATION is always taken inside it, never the other way round.
         synchronized (this) {
-            reconcile(existence(), logMissing);
+            Existence existence = existence();
+            if (!register()) return;
+            report(existence);
         }
     }
 
-    private void reconcile(Existence existence, boolean logMissing) {
+    /** True when this scope is registered (now or already); false when inactive or the name is taken. */
+    private boolean register() {
         synchronized (REGISTRATION) {
-            if (!active) return;
-            if (existence == Existence.MISSING) {
-                if (registration != null) {
-                    LOGGER.error("OAuth scope {} unregistered: its resource path {} no longer exists. Token requests for "
-                            + "this scope now fail with invalid_scope until the path exists again.",
-                            config.scopeName(), config.resourcePath());
-                    unregister();
-                } else if (logMissing) {
-                    LOGGER.error("OAuth scope {} not registered: its resource path {} does not exist (or is not visible to {}). "
-                            + "Token requests for this scope fail with invalid_scope; it registers automatically when the "
-                            + "path is created.", config.scopeName(), config.resourcePath(), READER);
-                }
-                return;
-            }
-            if (registration != null) return;
+            if (!active) return false;
+            if (registration != null) return true;
             String holder = holderOfName();
             if (holder != null) {
                 LOGGER.error("OAuth scope {} not registered: the name is already registered by {}. Granite keeps one "
                         + "scope per name, so registering it would silently replace that scope. Remove one of the two "
                         + "definitions (this one is a {} configuration in {}).", config.scopeName(), holder,
                         DynamicScope.class.getName(), describe(bundleContext.getBundle()));
-                return;
+                return false;
             }
             Dictionary<String, Object> properties = new Hashtable<>();
             properties.put(SCOPE_NAME_PROPERTY, config.scopeName());
             registration = bundleContext.registerService(Scope.class.getName(), scope, properties);
-            if (existence == Existence.UNKNOWN) {
-                LOGGER.warn("OAuth scope {} registered without checking that {} exists: the {} service user of {} is not "
-                        + "available. Install this package's repoinit and service mapping configurations.",
-                        config.scopeName(), config.resourcePath(), SUBSERVICE, bundleContext.getBundle().getSymbolicName());
-            }
+            return true;
         }
+    }
+
+    /** Logs the path's state when it changes. Caller holds this. */
+    private void report(Existence existence) {
+        if (existence == Existence.UNKNOWN) {
+            if (known == null && !warnedUnchecked) {
+                warnedUnchecked = true;
+                LOGGER.warn("OAuth scope {} registered without checking that {} exists: the {} service user of {} cannot "
+                        + "log in yet. The path is checked when it can.", config.scopeName(), config.resourcePath(),
+                        SUBSERVICE, bundleContext.getBundle().getSymbolicName());
+            }
+            return;
+        }
+        if (existence == known) return;
+        if (existence == Existence.MISSING) {
+            LOGGER.error(missingMessage(), config.scopeName(), config.resourcePath(), READER);
+        } else if (known == Existence.MISSING) {
+            LOGGER.info("OAuth scope {}: resource path {} exists again.", config.scopeName(), config.resourcePath());
+        }
+        known = existence;
+    }
+
+    private static String missingMessage() {
+        return "OAuth scope {} is registered, but its resource path {} is missing or not visible to {} (only a deny "
+                + "entry for that user, or a closed user group where CUG evaluation is enabled, can hide an existing path). "
+                + "Tokens for this scope are still issued; they grant nothing under the path while it is missing.";
     }
 
     boolean registered() {
@@ -210,6 +274,16 @@ public class DynamicScopeRegistrar implements ResourceChangeListener, ExternalRe
                 // The bundle is stopping and the framework already removed it.
             }
             registration = null;
+        }
+    }
+
+    /** Token-time check: never refuses; logs at most once per {@link #TOKEN_ERROR_INTERVAL_MS} per scope. */
+    void checkAtTokenIssue(String path) {
+        if (existence() != Existence.MISSING) return;
+        long now = System.currentTimeMillis();
+        long last = lastTokenError.get();
+        if (now - last >= TOKEN_ERROR_INTERVAL_MS && lastTokenError.compareAndSet(last, now)) {
+            LOGGER.error(missingMessage(), config.scopeName(), path, READER);
         }
     }
 
@@ -264,7 +338,7 @@ public class DynamicScopeRegistrar implements ResourceChangeListener, ExternalRe
         return bundle == null ? "an unknown bundle" : bundle.getSymbolicName() + " [" + bundle.getBundleId() + "]";
     }
 
-    /** The registered scope: a {@link DynamicScope} that re-checks its path when a token is issued. */
+    /** The registered scope: a {@link DynamicScope} that reports a missing path when a token is issued. */
     static final class ConfiguredScope extends DynamicScope {
         private final DynamicScopeRegistrar registrar;
 
@@ -274,17 +348,17 @@ public class DynamicScopeRegistrar implements ResourceChangeListener, ExternalRe
         }
 
         /**
-         * Called by Granite when it issues a token. If the path has gone (for example an ancestor was
-         * deleted, which the listener does not see), the scope unregisters and the token request fails
-         * instead of returning a token with no access.
+         * Called by Granite when it issues a token. Returns the configured path as before, and logs (rate-limited)
+         * when the path has gone or is hidden, for example after an ancestor was deleted on a path the listener
+         * cannot see. It never throws: a missing path must not change what Granite returns.
          */
         @Override
         public String getResourcePath(User user) {
             String path = super.getResourcePath(user);
-            if (registrar.existence() == Existence.MISSING) {
-                registrar.reconcile(false);
-                throw new IllegalStateException("OAuth scope " + getName() + " cannot be granted: resource path "
-                        + path + " does not exist");
+            try {
+                registrar.checkAtTokenIssue(path);
+            } catch (RuntimeException e) {
+                LOGGER.debug("OAuth scope {}: token-time path check failed", getName(), e);
             }
             return path;
         }

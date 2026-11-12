@@ -15,20 +15,36 @@ import org.apache.sling.jcr.api.SlingRepository;
 import org.apache.sling.jcr.api.SlingRepositoryInitializer;
 import org.apache.sling.jcr.repoinit.JcrRepoInitOpsProcessor;
 import org.apache.sling.repoinit.parser.RepoInitParser;
+import org.osgi.framework.BundleContext;
+import org.osgi.framework.ServiceRegistration;
+import org.osgi.service.component.annotations.Activate;
 import org.osgi.service.component.annotations.Component;
 import org.osgi.service.component.annotations.ConfigurationPolicy;
+import org.osgi.service.component.annotations.Deactivate;
 import org.osgi.service.component.annotations.Reference;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Creates the {@value DynamicScopeRegistrar#READER} service user that checks scope paths, with Sling's repoinit
- * parser and processor, but never from a repoinit configuration: an existing normal user or group with that ID
- * makes {@code create service user} throw, and a throwing configuration-based repoinit stops SlingRepository at
- * startup. This initializer instead leaves such an account untouched, applies nothing, logs one ERROR and never
- * throws, so AEM always starts. Scopes then register without the existence check, as before.
+ * Creates the {@value DynamicScopeRegistrar#READER} service user that checks scope paths, applying the bundled
+ * {@value #SCRIPT} with Sling's own {@link RepoInitParser} and {@link JcrRepoInitOpsProcessor} services.
  *
- * <p>Runs only when its configuration exists, which this package ships for Author only.
+ * <p><b>Why Java, not a repoinit {@code .cfg.json}.</b> A {@code RepositoryInitializer~*.cfg.json} with
+ * {@code create service user gradial-oauth-scope-reader} throws when a normal user or a group already has that ID
+ * (jcr.repoinit 1.1.54 {@code UserVisitor.java:170-175}, "Existing user %s is not a service user."). At startup,
+ * jcr.base runs every initializer before it registers {@code SlingRepository}, and any exception aborts that
+ * registration ({@code AbstractSlingRepositoryManager.java:575-577} in jcr.base 3.2.0, "SlingRepository service
+ * registration aborted"), so AEM would not start. Repoinit has no conditional or continue-on-error statement. This
+ * class checks the ID first, leaves another account untouched, logs one ERROR and never throws.
+ *
+ * <p>An initializer registered after the repository is up runs at once, against the same master repository
+ * ({@code AbstractSlingRepositoryManager.java:486-492}), so a package install sets the user up without a restart.
+ * When the user is in place it registers {@link ScopeReaderReady}, so scope registrars that activated before the
+ * user existed check their paths at that moment.
+ *
+ * <p>Enabled only by {@code com.gradial.core.oauth.scopes.impl.ScopeReaderRepositoryInitializer.cfg.json}, an
+ * empty configuration this package ships in {@code config.author} ({@code configurationPolicy=REQUIRE}), so it
+ * runs on Author only.
  */
 @Component(service = SlingRepositoryInitializer.class, configurationPolicy = ConfigurationPolicy.REQUIRE)
 public class ScopeReaderRepositoryInitializer implements SlingRepositoryInitializer {
@@ -40,10 +56,31 @@ public class ScopeReaderRepositoryInitializer implements SlingRepositoryInitiali
     @Reference
     private JcrRepoInitOpsProcessor processor;
 
+    private BundleContext bundleContext;
+    private ServiceRegistration<ScopeReaderReady> ready;
+
+    @Activate
+    void activate(BundleContext context) {
+        this.bundleContext = context;
+    }
+
+    @Deactivate
+    synchronized void deactivate() {
+        if (ready != null) {
+            try {
+                ready.unregister();
+            } catch (IllegalStateException alreadyGone) {
+                // The bundle is stopping and the framework already removed it.
+            }
+            ready = null;
+        }
+        bundleContext = null;
+    }
+
     @Override
     public void processRepository(SlingRepository repository) {
         try {
-            apply(repository);
+            if (apply(repository)) announce();
         } catch (Exception | LinkageError e) {
             LOG.error("Could not set up the {} service user; OAuth scopes register without checking their paths. AEM "
                     + "starts normally.", DynamicScopeRegistrar.READER, e);
@@ -52,7 +89,14 @@ public class ScopeReaderRepositoryInitializer implements SlingRepositoryInitiali
 
     /** True when the script was applied; false when an account of another kind holds the ID. */
     boolean apply(SlingRepository repository) throws Exception {
-        // An admin session is what repoinit's own initializer uses for the same statements.
+        // The repository passed to an initializer is jcr.base's master repository, created for jcr.base's own
+        // bundle (AbstractSlingRepositoryManager.java:568, create(this.bundleContext.getBundle())). Its
+        // loginAdministrative checks allowLoginAdministrativeForBundle(usingBundle) for that bundle
+        // (AbstractSlingRepository2.java:443-444), not for gradial.core, so no login-admin allow-list entry is
+        // needed. Sling's own RepositoryInitializerFactory makes the same call (jcr.repoinit 1.1.54,
+        // RepositoryInitializerFactory.java:126-128). loginService is impossible here: this creates the user that a
+        // service login would need.
+        @SuppressWarnings("deprecation")
         Session session = repository.loginAdministrative(null);
         try {
             Authorizable existing = ((JackrabbitSession) session).getUserManager().getAuthorizable(DynamicScopeRegistrar.READER);
@@ -69,6 +113,13 @@ public class ScopeReaderRepositoryInitializer implements SlingRepositoryInitiali
             return true;
         } finally {
             session.logout();
+        }
+    }
+
+    /** Tells scope registrars that the reader exists. */
+    private synchronized void announce() {
+        if (ready == null && bundleContext != null) {
+            ready = bundleContext.registerService(ScopeReaderReady.class, new ScopeReaderReady() { }, null);
         }
     }
 

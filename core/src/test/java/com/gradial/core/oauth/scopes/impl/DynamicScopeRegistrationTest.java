@@ -25,7 +25,7 @@ import uk.org.lidalia.slf4jtest.LoggingEvent;
 import uk.org.lidalia.slf4jtest.TestLogger;
 import uk.org.lidalia.slf4jtest.TestLoggerFactory;
 
-/** Registration rules for {@link DynamicScopeRegistrar}, on OSGi and Sling mocks. */
+/** Registration and path-reporting rules for {@link DynamicScopeRegistrar}, on OSGi and Sling mocks. */
 @ExtendWith(AemContextExtension.class)
 class DynamicScopeRegistrationTest {
     private final AemContext context = new AemContext();
@@ -42,6 +42,10 @@ class DynamicScopeRegistrationTest {
 
     /** Activates one scope configuration through the registrar, as SCR does. */
     private DynamicScopeRegistrar registrar(String name, String path) {
+        return registrar(name, path, context.getService(ResourceResolverFactory.class));
+    }
+
+    private DynamicScopeRegistrar registrar(String name, String path, ResourceResolverFactory factory) {
         DynamicOAuthScopeConfiguration config = mock(DynamicOAuthScopeConfiguration.class);
         when(config.scopeName()).thenReturn(name);
         when(config.resourcePath()).thenReturn(path);
@@ -50,7 +54,7 @@ class DynamicScopeRegistrationTest {
         try {
             java.lang.reflect.Field f = DynamicScopeRegistrar.class.getDeclaredField("resolverFactory");
             f.setAccessible(true);
-            f.set(registrar, context.getService(ResourceResolverFactory.class));
+            f.set(registrar, factory);
         } catch (ReflectiveOperationException e) { throw new AssertionError(e); }
         registrar.activate(context.bundleContext(), config);
         return registrar;
@@ -66,6 +70,11 @@ class DynamicScopeRegistrationTest {
         return Arrays.stream(context.getServices(Scope.class, null)).map(Scope::getName).collect(Collectors.toList());
     }
 
+    private List<String> messages(uk.org.lidalia.slf4jext.Level level) {
+        return log.getAllLoggingEvents().stream().filter(e -> e.getLevel() == level)
+                .map(LoggingEvent::getMessage).collect(Collectors.toList());
+    }
+
     private List<String> errors() {
         return log.getAllLoggingEvents().stream().filter(e -> e.getLevel() == uk.org.lidalia.slf4jext.Level.ERROR)
                 .map(LoggingEvent::getMessage).collect(Collectors.toList());
@@ -75,42 +84,64 @@ class DynamicScopeRegistrationTest {
         return Collections.singletonList(new ResourceChange(type, path, false));
     }
 
-    @Test
-    void aScopeWhosePathExistsIsRegistered() {
-        path("/content/site");
-        registrar("site_author", "/content/site");
-        assertEquals(Collections.singletonList("site_author"), registeredNames());
-        assertTrue(errors().isEmpty());
+    private void delete(String path) {
+        org.apache.sling.api.resource.ResourceResolver resolver = context.resourceResolver();
+        try {
+            resolver.delete(resolver.getResource(path));
+            resolver.commit();
+        } catch (Exception e) { throw new AssertionError(e); }
+    }
+
+    /** A factory that cannot log the reader in until {@code ready} is set, as on a fresh install. */
+    private ResourceResolverFactory readerAppearsLater(java.util.concurrent.atomic.AtomicBoolean ready) throws Exception {
+        ResourceResolverFactory real = context.getService(ResourceResolverFactory.class);
+        ResourceResolverFactory factory = mock(ResourceResolverFactory.class);
+        when(factory.getServiceResourceResolver(any())).thenAnswer(call -> {
+            if (!ready.get()) throw new LoginException("gradial-oauth-scope-reader does not exist yet");
+            return real.getServiceResourceResolver(call.getArgument(0));
+        });
+        return factory;
     }
 
     @Test
-    void aScopeWhosePathIsMissingIsNotRegisteredAndLogsOneErrorNamingScopeAndPath() {
+    void aScopeWhosePathExistsIsRegisteredWithoutLogging() {
+        path("/content/site");
+        registrar("site_author", "/content/site");
+        assertEquals(Collections.singletonList("site_author"), registeredNames());
+        assertTrue(log.getAllLoggingEvents().stream().noneMatch(e -> e.getLevel().compareTo(uk.org.lidalia.slf4jext.Level.INFO) <= 0
+                && e.getLevel() != uk.org.lidalia.slf4jext.Level.DEBUG));
+    }
+
+    @Test
+    void aScopeWhosePathIsMissingIsStillRegisteredAndLogsOneErrorNamingScopeAndPath() {
         registrar("site_author", "/content/missing");
-        assertTrue(registeredNames().isEmpty());
+        assertEquals(Collections.singletonList("site_author"), registeredNames(), "visibility never decides registration");
         assertEquals(1, errors().size());
         LoggingEvent error = log.getAllLoggingEvents().stream()
                 .filter(e -> e.getLevel() == uk.org.lidalia.slf4jext.Level.ERROR).findFirst().get();
         assertTrue(error.getArguments().contains("site_author"));
         assertTrue(error.getArguments().contains("/content/missing"));
+        assertTrue(error.getArguments().contains(DynamicScopeRegistrar.READER));
+        assertTrue(error.getMessage().contains("missing or not visible") && error.getMessage().contains("closed user group"),
+                error.getMessage());
     }
 
     @Test
-    void theScopeRegistersWhenItsPathAppearsAndUnregistersWhenItIsRemoved() {
+    void pathChangesAreReportedOnceEachWhileTheScopeStaysRegistered() {
         DynamicScopeRegistrar scope = registrar("workflow_start", "/var/workflow/models/gradial");
-        assertTrue(registeredNames().isEmpty());
+        assertEquals(1, errors().size());
 
         path("/var/workflow/models/gradial");
         scope.onChange(change(ResourceChange.ChangeType.ADDED, "/var/workflow/models/gradial"));
-        assertEquals(Collections.singletonList("workflow_start"), registeredNames());
+        assertEquals(1, messages(uk.org.lidalia.slf4jext.Level.INFO).size(), "one INFO when the path exists again");
+        scope.onChange(change(ResourceChange.ChangeType.ADDED, "/var/workflow/models/gradial"));
+        assertEquals(1, messages(uk.org.lidalia.slf4jext.Level.INFO).size(), "no repeat while nothing changed");
 
-        context.resourceResolver().getResource("/var/workflow/models/gradial");
-        org.apache.sling.api.resource.ResourceResolver resolver = context.resourceResolver();
-        try {
-            resolver.delete(resolver.getResource("/var/workflow/models/gradial"));
-            resolver.commit();
-        } catch (Exception e) { throw new AssertionError(e); }
+        delete("/var/workflow/models/gradial");
         scope.onChange(change(ResourceChange.ChangeType.REMOVED, "/var/workflow/models/gradial"));
-        assertTrue(registeredNames().isEmpty());
+        scope.onChange(change(ResourceChange.ChangeType.REMOVED, "/var/workflow/models/gradial"));
+        assertEquals(2, errors().size(), "one more ERROR for the removal, not one per event");
+        assertEquals(Collections.singletonList("workflow_start"), registeredNames());
     }
 
     @Test
@@ -135,16 +166,33 @@ class DynamicScopeRegistrationTest {
         assertTrue(found);
     }
 
-    @Test
-    void theComponentDeclaresNoServiceSoNoUnscopedListenerIsRegistered() {
+    private static String descriptor() {
         // bnd writes the descriptor into target/classes before tests run.
         java.nio.file.Path descriptor = java.nio.file.Paths.get("target/classes/OSGI-INF/"
                 + DynamicScopeRegistrar.class.getName() + ".xml");
-        String xml;
-        try { xml = new String(java.nio.file.Files.readAllBytes(descriptor), java.nio.charset.StandardCharsets.UTF_8); }
+        try { return new String(java.nio.file.Files.readAllBytes(descriptor), java.nio.charset.StandardCharsets.UTF_8); }
         catch (java.io.IOException e) { throw new AssertionError(e); }
+    }
+
+    @Test
+    void theComponentDeclaresNoServiceSoNoUnscopedListenerIsRegistered() {
+        String xml = descriptor();
         assertTrue(xml.contains("configuration-pid=\"com.gradial.core.oauth.scopes.DynamicScope\""), "existing configurations still apply");
         assertFalse(xml.contains("<service"), "a declarative ResourceChangeListener would have no resource.paths");
+    }
+
+    @Test
+    void bothReaderSignalsAreOptionalDynamicGreedyReferences() {
+        String xml = descriptor();
+        for (String service : new String[] {ScopeReaderReady.class.getName(), "org.apache.sling.serviceusermapping.ServiceUserMapped"}) {
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("<reference [^>]*interface=\"" + java.util.regex.Pattern.quote(service) + "\"[^>]*/>").matcher(xml);
+            assertTrue(m.find(), service + " is referenced");
+            String reference = m.group();
+            assertTrue(reference.contains("cardinality=\"0..1\""), reference);
+            assertTrue(reference.contains("policy=\"dynamic\""), reference);
+            assertTrue(reference.contains("policy-option=\"greedy\""), reference);
+        }
+        assertTrue(xml.contains("target=\"(subServiceName=scope-check)\""));
     }
 
     @Test
@@ -155,19 +203,12 @@ class DynamicScopeRegistrationTest {
     }
 
     @Test
-    void aRemovalOfAnUnregisteredScopesPathLogsNothingNew() {
-        DynamicScopeRegistrar scope = registrar("zz", "/content/missing");
-        int before = errors().size();
-        scope.onChange(change(ResourceChange.ChangeType.REMOVED, "/content/missing"));
-        assertEquals(before, errors().size());
-    }
-
-    @Test
-    void creatingAMissingAncestorRegistersTheScope() {
+    void creatingAMissingAncestorIsReported() {
         DynamicScopeRegistrar scope = registrar("deep", "/content/new/site");
         path("/content/new/site");
         scope.onChange(change(ResourceChange.ChangeType.ADDED, "/content/new"));
         assertEquals(Collections.singletonList("deep"), registeredNames());
+        assertEquals(1, messages(uk.org.lidalia.slf4jext.Level.INFO).size());
     }
 
     @Test
@@ -175,30 +216,30 @@ class DynamicScopeRegistrationTest {
         DynamicScopeRegistrar scope = registrar("site_author", "/content/site");
         path("/content/other");
         scope.onChange(change(ResourceChange.ChangeType.ADDED, "/content/other"));
-        assertTrue(registeredNames().isEmpty());
+        assertTrue(messages(uk.org.lidalia.slf4jext.Level.INFO).isEmpty());
+        assertEquals(1, errors().size());
     }
 
     @Test
-    void anAncestorRemovalFailsTheNextTokenAndUnregistersTheScope() {
+    void aTokenForAScopeWhosePathIsGoneIsStillIssuedAndTheErrorIsRateLimited() {
         path("/content/site/en");
-        DynamicScopeRegistrar scope = registrar("site_author", "/content/site/en");
+        registrar("site_author", "/content/site/en");
         Scope granted = registered("site_author");
-        assertEquals("/content/site/en", ((com.adobe.granite.oauth.server.ScopeWithPrivileges) granted).getResourcePath(null));
-        org.apache.sling.api.resource.ResourceResolver resolver = context.resourceResolver();
-        try {
-            resolver.delete(resolver.getResource("/content/site"));
-            resolver.commit();
-        } catch (Exception e) { throw new AssertionError(e); }
-        assertThrows(IllegalStateException.class, () -> granted.getResourcePath(null));
-        assertTrue(registeredNames().isEmpty());
+        delete("/content/site");
+        for (int i = 0; i < 3; i++) {
+            assertEquals("/content/site/en", ((com.adobe.granite.oauth.server.ScopeWithPrivileges) granted).getResourcePath(null),
+                    "Granite gets the configured path as before");
+        }
+        assertEquals(1, errors().size(), "one token-time ERROR per interval");
+        assertEquals(Collections.singletonList("site_author"), registeredNames());
     }
 
     @Test
-    void otherScopesKeepWorkingWhenOneIsRefused() {
+    void otherScopesKeepWorkingNextToOneWithAMissingPath() {
         path("/content/site");
         registrar("broken", "/content/missing");
-        DynamicScopeRegistrar valid = registrar("site_author", "/content/site");
-        assertEquals(Collections.singletonList("site_author"), registeredNames());
+        registrar("site_author", "/content/site");
+        assertEquals(Arrays.asList("broken", "site_author"), registeredNames().stream().sorted().collect(Collectors.toList()));
         assertEquals("/content/site", registered("site_author").getResourcePath(null));
     }
 
@@ -233,6 +274,7 @@ class DynamicScopeRegistrationTest {
         scope.deactivate();
         assertTrue(registeredNames().isEmpty());
         scope.onChange(change(ResourceChange.ChangeType.ADDED, "/content/site"));
+        scope.bindScopeReaderReady(new ScopeReaderReady() { });
         assertTrue(registeredNames().isEmpty(), "a deactivated scope never re-registers");
     }
 
@@ -240,21 +282,56 @@ class DynamicScopeRegistrationTest {
     void withoutTheServiceUserTheScopeStillRegistersAsBeforeWithOneWarning() throws Exception {
         ResourceResolverFactory unavailable = mock(ResourceResolverFactory.class);
         when(unavailable.getServiceResourceResolver(any())).thenThrow(new LoginException("no mapping"));
-        context.registerService(ResourceResolverFactory.class, unavailable, "service.ranking", Integer.MAX_VALUE);
-        DynamicScopeRegistrar scope = registrar("site_author", "/content/anything");
+        DynamicScopeRegistrar scope = registrar("site_author", "/content/anything", unavailable);
+        scope.onChange(change(ResourceChange.ChangeType.ADDED, "/content/anything"));
         assertEquals(Collections.singletonList("site_author"), registeredNames());
         assertEquals("/content/anything", registered("site_author").getResourcePath(null));
         assertTrue(errors().isEmpty());
-        assertEquals(1, log.getAllLoggingEvents().stream().filter(e -> e.getLevel() == uk.org.lidalia.slf4jext.Level.WARN).count());
+        assertEquals(1, messages(uk.org.lidalia.slf4jext.Level.WARN).size());
     }
+
     @Test
-    void theListenerIsAnExternalListenerSoClusterPeersReconcile() {
+    void whenTheReaderAppearsAfterActivationTheMissingPathIsReportedWithoutARestart() throws Exception {
+        java.util.concurrent.atomic.AtomicBoolean ready = new java.util.concurrent.atomic.AtomicBoolean(false);
+        DynamicScopeRegistrar scope = registrar("site_author", "/content/missing", readerAppearsLater(ready));
+        assertEquals(1, messages(uk.org.lidalia.slf4jext.Level.WARN).size(), "unchecked at activation");
+        assertTrue(errors().isEmpty());
+
+        ready.set(true);
+        scope.bindScopeReaderReady(new ScopeReaderReady() { });
+        assertEquals(1, errors().size(), "the initializer's marker triggers the check");
+        assertEquals(Collections.singletonList("site_author"), registeredNames());
+    }
+
+    @Test
+    void aLateServiceUserMappingAlsoTriggersTheCheck() throws Exception {
+        java.util.concurrent.atomic.AtomicBoolean ready = new java.util.concurrent.atomic.AtomicBoolean(false);
+        DynamicScopeRegistrar scope = registrar("site_author", "/content/missing", readerAppearsLater(ready));
+        ready.set(true);
+        scope.bindServiceUserMapped(mock(org.apache.sling.serviceusermapping.ServiceUserMapped.class));
+        assertEquals(1, errors().size());
+    }
+
+    @Test
+    void aReaderSignalForAPresentPathLogsNothing() throws Exception {
+        path("/content/site");
+        java.util.concurrent.atomic.AtomicBoolean ready = new java.util.concurrent.atomic.AtomicBoolean(false);
+        DynamicScopeRegistrar scope = registrar("site_author", "/content/site", readerAppearsLater(ready));
+        ready.set(true);
+        scope.bindScopeReaderReady(new ScopeReaderReady() { });
+        assertTrue(errors().isEmpty());
+        assertTrue(messages(uk.org.lidalia.slf4jext.Level.INFO).isEmpty());
+        assertEquals(1, messages(uk.org.lidalia.slf4jext.Level.WARN).size(), "only the activation warning");
+    }
+
+    @Test
+    void theListenerIsAnExternalListenerSoClusterPeersReport() {
         DynamicScopeRegistrar scope = registrar("site_author", "/content/site");
         assertTrue(scope instanceof org.apache.sling.api.resource.observation.ExternalResourceChangeListener);
     }
 
     @Test
-    void aSlowStaleCheckCannotUndoANewerRegistration() throws Exception {
+    void aSlowStaleCheckIsNeverReportedAfterANewerOne() throws Exception {
         java.util.concurrent.CountDownLatch checking = new java.util.concurrent.CountDownLatch(1);
         java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
         ResourceResolverFactory real = context.getService(ResourceResolverFactory.class);
@@ -262,7 +339,7 @@ class DynamicScopeRegistrationTest {
         ResourceResolverFactory slowFirst = mock(ResourceResolverFactory.class);
         when(slowFirst.getServiceResourceResolver(any())).thenAnswer(call -> {
             if (first.getAndSet(false)) {
-                // The activation check reads MISSING, then stalls before deciding.
+                // The activation check reads MISSING, then stalls before reporting.
                 org.apache.sling.api.resource.ResourceResolver missing = mock(org.apache.sling.api.resource.ResourceResolver.class);
                 checking.countDown();
                 assertTrue(release.await(5, java.util.concurrent.TimeUnit.SECONDS));
@@ -290,6 +367,10 @@ class DynamicScopeRegistrationTest {
         release.countDown();
         activation.join(5000);
         listener.join(5000);
-        assertEquals(Collections.singletonList("late"), registeredNames(), "the newer PRESENT check must win");
+        assertEquals(Collections.singletonList("late"), registeredNames());
+        List<uk.org.lidalia.slf4jext.Level> order = log.getAllLoggingEvents().stream().map(LoggingEvent::getLevel)
+                .filter(l -> l != uk.org.lidalia.slf4jext.Level.DEBUG).collect(Collectors.toList());
+        assertEquals(Arrays.asList(uk.org.lidalia.slf4jext.Level.ERROR, uk.org.lidalia.slf4jext.Level.INFO), order,
+                "the older MISSING is reported first and the newer PRESENT last");
     }
 }

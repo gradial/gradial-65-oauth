@@ -137,4 +137,26 @@ class ScopeReaderRepoinitTest {
         inject("processor", (org.apache.sling.jcr.repoinit.JcrRepoInitOpsProcessor) (s, ops) -> { throw new RuntimeException("boom"); });
         assertDoesNotThrow(() -> initializer.processRepository(sling));
     }
+    @Test
+    void theReaderMarkerIsRegisteredOnlyWhenTheUserIsInPlace() throws Exception {
+        org.osgi.framework.BundleContext context = mock(org.osgi.framework.BundleContext.class);
+        @SuppressWarnings("unchecked")
+        org.osgi.framework.ServiceRegistration<ScopeReaderReady> registration = mock(org.osgi.framework.ServiceRegistration.class);
+        when(context.registerService(eq(ScopeReaderReady.class), any(ScopeReaderReady.class), any())).thenReturn(registration);
+        initializer.activate(context);
+
+        users().createUser(DynamicScopeRegistrar.READER, "customer-password");
+        admin.save();
+        initializer.processRepository(sling);
+        verify(context, never()).registerService(eq(ScopeReaderReady.class), any(ScopeReaderReady.class), any());
+
+        users().getAuthorizable(DynamicScopeRegistrar.READER).remove();
+        admin.save();
+        initializer.processRepository(sling);
+        initializer.processRepository(sling);
+        verify(context, times(1)).registerService(eq(ScopeReaderReady.class), any(ScopeReaderReady.class), any());
+
+        initializer.deactivate();
+        verify(registration).unregister();
+    }
 }
