@@ -90,15 +90,23 @@ mvn clean install -PautoInstallPackage
 
 ### Every resourcePath must exist
 
-Each scope's `resourcePath` must exist on every environment where the configuration is deployed. Granite OAuth gives a token **no access at all** if any one of the scopes it requests points at a missing path, and it still issues the token: every read then returns 404 with no error anywhere.
+Each scope's `resourcePath` must exist on every environment where the configuration is deployed. Granite OAuth 1.1.34 handles a missing path badly, and this package does not change that:
 
-So a scope is registered with Granite only while its path exists:
+- **Authorization-code flow:** consent fails. `OAuth2AuthorizationCodeIssuer.doPost` throws `OAuthSystemException: failed while accessing repository` and the consent POST returns 500, also when valid scopes are requested in the same request.
+- **JWT bearer grant (what Gradial uses):** the token is issued, but it gets no access anywhere. Every content read returns 404, including reads under the other scopes in the same token.
 
-- At activation, a scope whose path is missing is not registered, and AEM logs one ERROR naming the scope and the path. A token request that asks for it fails with `invalid_scope`, so the problem is visible. Tokens for the other scopes keep working.
-- The scope registers by itself, without a restart, when the path is created (for example by a later package or a workflow model sync). A Sling resource change listener on the path drives this; there is no polling.
-- If the path is removed, the scope unregisters and logs an ERROR. When a token is issued, the scope checks its path again, so removing an ancestor of the path also fails the token request instead of issuing a token with no access.
+This package therefore **detects and logs** a missing path; it never refuses the scope. A scope always registers when its name is free, and AEM logs one ERROR naming the scope and the path:
 
-The existence check runs as the service user `gradial-oauth-scope-reader`, created on Author by this package's repository initializer. The initializer applies Sling repoinit statements, but never from a repoinit configuration: if a normal user or a group named `gradial-oauth-scope-reader` already exists, it leaves that account untouched, sets nothing up and logs one ERROR, and it never fails, so AEM always starts. The scopes then register without the check. It has only `rep:readNodes` on `/`: it can see that nodes exist but cannot read properties. System users are exempt from closed user groups, but a deny ACE for `everyone` on a scope's path also hides it from this user. In that case grant `gradial-oauth-scope-reader` `rep:readNodes` on that path. If the service user is missing (for example, a deployment that copies the scope class without this package's configurations), scopes register as before and AEM logs one WARN per scope.
+- at activation;
+- when the path, or an ancestor, is added or removed (a Sling resource change listener; no polling, no restart). The ERROR repeats only after the path came back, which logs one INFO;
+- when the reader user becomes available after the scopes activated (a fresh install), without a restart;
+- when Granite reads the scope's path to issue a token, at most once every 15 minutes per scope.
+
+Gradial's own health check shows the user-facing message.
+
+The check runs as the service user `gradial-oauth-scope-reader`, created on Author by this package's repository initializer, with only `rep:readNodes` on `/`: it can see that nodes exist but cannot read properties. Oak evaluates permission entries for user principals before those for group principals, so this user's own allow on `/` wins over a `deny jcr:read` for `everyone` on a scope's path: such a deny does not cause a false report. An existing path is hidden from the reader only by a deny entry for `gradial-oauth-scope-reader` itself, or by a closed user group on the path or an ancestor where CUG evaluation is enabled (it is off on Author by default).
+
+The initializer applies Sling repoinit statements, but never from a repoinit configuration: if a normal user or a group named `gradial-oauth-scope-reader` already exists, it leaves that account untouched, sets nothing up and logs one ERROR, and it never fails, so AEM always starts. Scopes then register with one WARN each that their paths are unchecked, which is also what happens on a deployment that copies the scope class without this package's configurations.
 
 ### Scope names must be unique
 
@@ -191,8 +199,8 @@ If the DynamicScope component shows as "no config" in OSGi:
 - **400 Bad Request**: Check grant_type and required parameters
 - **401 Unauthorized**: Verify client credentials
 - **403 Forbidden**: Scope may not have access to requested resource
-- **400 `invalid_scope`**: A requested scope is not registered. Check `error.log` for `OAuth scope <name> not registered`: its `resourcePath` does not exist, or another scope already uses the name.
-- **Token issued, but every read returns 404**: With this package, this no longer happens because of a missing scope path. If it does, check scopes defined outside this package.
+- **400 `invalid_scope`**: A requested scope is not registered. Check `error.log` for `OAuth scope <name> not registered`: another scope already uses the name.
+- **Consent fails with 500, or the token is issued but every read returns 404**: one requested scope's `resourcePath` is missing. Check `error.log` for `OAuth scope <name> is registered, but its resource path ... is missing or not visible`.
 
 ## License
 
