@@ -21,7 +21,6 @@ class OboAuthenticationTest {
 
     private static OboService service() {
         OboService service = mock(OboService.class);
-        when(service.paths()).thenReturn(OboPaths.of(null));
         return service;
     }
 
@@ -75,18 +74,20 @@ class OboAuthenticationTest {
     }
 
     @Test
-    void deniedPathsAreRefusedBeforeLoginIncludingNonSlingContextsAndEncodedForms() throws Exception {
+    void fixedEndpointsAreRefusedBeforeLoginIncludingNonSlingContextsAndEncodedForms() throws Exception {
         String[] denied = {"/system/console/bundles", "/oauth/token", "/crx/de/index.jsp", "/crx/%70ackmgr/service.jsp",
             "//crx//packmgr", "/content/../crx/packmgr", "/LIBS/granite/security/post/authorizables", "/bin/gradial/obo/authorize",
-            "/libs/granite/oauth/authorize", "/etc/packages;x=y/my.zip", "/%2e%2e/crx", "/crx%00"};
+            "/libs/granite/oauth/authorize", "/crx/server;x=y/crx.default", "/%2e%2e/crx", "/crx%00"};
         for (String uri : denied) {
             HttpServletResponse response = mock(HttpServletResponse.class);
             assertSame(AuthenticationInfo.DOING_AUTH, handler(service()).extractCredentials(
                     request("GradialOBO " + TOKEN, "GET", uri), response), uri);
             verify(response).setStatus(403);
         }
-        assertNotNull(handler(service()).extractCredentials(request("GradialOBO " + TOKEN, "GET", "/libs/granite/security/currentuser.json"),
-                mock(HttpServletResponse.class)).get("user.jcr.credentials"));
+        for (String allowed : new String[] {"/libs/granite/security/currentuser.json", "/etc/packages/my.zip", "/content/site"}) {
+            assertNotNull(handler(service()).extractCredentials(request("GradialOBO " + TOKEN, "GET", allowed),
+                    mock(HttpServletResponse.class)).get("user.jcr.credentials"), allowed);
+        }
     }
 
     @Test

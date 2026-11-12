@@ -184,7 +184,7 @@ class OboServiceTest {
     void changingClientConfigurationInvalidatesExistingGrants() throws Exception {
         OboService.Tokens tokens = tokens();
         when(config.clientSecretSha256()).thenReturn(OboService.hash("replacement-secret"));
-        service.activate(config);
+        service.activate(config, java.util.Collections.emptyMap());
         assertThrows(RepositoryException.class, () -> fixture.authenticate(tokens.access));
         assertThrows(RepositoryException.class, () -> service.refresh(tokens.refresh));
     }
@@ -377,7 +377,7 @@ class OboServiceTest {
         when(config.redirectUris()).thenReturn(new String[] {"https://app.gradial.com/aem/other-callback"});
         when(config.publicOrigin()).thenReturn("https://author-2.example.com");
         when(config.accessTokenSeconds()).thenReturn(600);
-        service.activate(config);
+        service.activate(config, java.util.Collections.emptyMap());
         assertEquals(USER, fixture.authenticate(tokens.access));
         OboService.Tokens renewed = service.refresh(tokens.refresh);
         Session session = storage.login();
@@ -388,7 +388,7 @@ class OboServiceTest {
         } finally { session.logout(); }
         when(config.grantSeconds()).thenReturn(60);
         when(config.accessTokenSeconds()).thenReturn(30);
-        service.activate(config);
+        service.activate(config, java.util.Collections.emptyMap());
         assertThrows(RepositoryException.class, () -> fixture.authenticate(renewed.access));
         assertThrows(RepositoryException.class, () -> service.refresh(renewed.refresh));
     }
@@ -428,5 +428,19 @@ class OboServiceTest {
         OboService.Tokens tokens = tokens();
         String forged = "goa_" + OboService.userKey("someone-else") + tokens.access.substring(20);
         assertThrows(RepositoryException.class, () -> fixture.authenticate(forged));
+    }
+
+    @Test
+    void aLeftoverDeniedPathsValueIsIgnoredWithOneWarning() throws Exception {
+        uk.org.lidalia.slf4jtest.TestLogger log = uk.org.lidalia.slf4jtest.TestLoggerFactory.getTestLogger(OboService.class);
+        log.clear();
+        java.util.Map<String, Object> leftover = new java.util.HashMap<>();
+        leftover.put(OboService.REMOVED_DENIED_PATHS, new String[] {"/content/private"});
+        service.activate(config, leftover);
+        assertEquals(1, log.getLoggingEvents().stream().filter(e -> e.getLevel() == uk.org.lidalia.slf4jext.Level.WARN
+                && e.getMessage().contains("deniedPaths")).count());
+        log.clear();
+        service.activate(config, java.util.Collections.emptyMap());
+        assertTrue(log.getLoggingEvents().stream().noneMatch(e -> e.getMessage().contains("deniedPaths")));
     }
 }

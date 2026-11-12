@@ -19,37 +19,39 @@ class OboPathsTest {
     }
 
     @Test
-    void theBaselineCannotBeConfiguredAway() {
-        OboPaths paths = OboPaths.of(new String[] {"/only-this"});
-        assertTrue(paths.refuses("POST", "/bin/gradial/obo/token"));
-        assertTrue(paths.refuses("POST", "/oauth/token"));
-        assertTrue(paths.refuses("GET", "/libs/granite/oauth/content/clients.html"));
-        assertTrue(paths.refuses("GET", "/only-this.json"));
-        assertFalse(paths.refuses("GET", "/crx/packmgr"), "a customer may opt out of the defaults");
+    void exactlyTheFixedEndpointsAreRefused() {
+        assertEquals(java.util.Arrays.asList("/bin/gradial/obo", "/oauth", "/libs/granite/oauth", "/crx/packmgr", "/crx/de",
+                "/crx/server", "/libs/granite/security", "/system/console"), OboPaths.REFUSED);
+        for (String uri : new String[] {"/bin/gradial/obo/token", "/oauth/token", "/libs/granite/oauth/content/clients.html",
+                "/crx/packmgr/service.jsp", "/crx/de/index.jsp", "/crx/server/crx.default/jcr:root", "/libs/granite/security/post/authorizables",
+                "/system/console/configMgr", "/system/console.json", "/OAUTH/token"}) {
+            assertTrue(OboPaths.refuses("POST", uri), uri);
+            assertTrue(OboPaths.refuses("GET", uri), uri);
+        }
     }
 
     @Test
     void prefixesCoverDescendantsSelectorsAndExtensionsButNotSiblings() {
-        OboPaths paths = OboPaths.of(null);
-        assertTrue(paths.refuses("GET", "/crx"));
-        assertTrue(paths.refuses("GET", "/crx.html"));
-        assertTrue(paths.refuses("GET", "/crx/de"));
-        assertFalse(paths.refuses("GET", "/crxfoo"));
-        assertFalse(paths.refuses("GET", "/content/crx"));
+        assertTrue(OboPaths.refuses("GET", "/crx/de"));
+        assertTrue(OboPaths.refuses("GET", "/crx/de.html"));
+        assertFalse(OboPaths.refuses("GET", "/crx/defaults"));
+        assertFalse(OboPaths.refuses("GET", "/content/crx/de"));
+        assertFalse(OboPaths.refuses("GET", "/oauthx"));
     }
 
     @Test
-    void writeEntriesRefuseOnlyMutationsAndIdentityReadsStayAvailable() {
-        OboPaths paths = OboPaths.of(null);
-        assertFalse(paths.refuses("GET", "/home/users/a/author.json"));
-        assertTrue(paths.refuses("POST", "/home/users/a/author"));
-        assertTrue(paths.refuses("DELETE", "/etc/replication/agents.author/publish"));
-        assertFalse(paths.refuses("GET", "/libs/granite/security/currentuser.json"));
-        assertTrue(paths.refuses("POST", "/libs/granite/security/currentuser.json"));
-        assertTrue(paths.refuses("GET", "/libs/granite/security/search/authorizables.json"));
+    void identityReadsStayAvailableAndEverythingElseIsLeftToAcls() {
+        for (String identity : new String[] {"/libs/granite/security/currentuser.json", "/libs/granite/security/whoami.json",
+                "/libs/granite/security/userinfo.json", "/libs/granite/security/currentuser.json?props=memberOf"}) {
+            assertFalse(OboPaths.refuses("GET", identity), identity);
+            assertFalse(OboPaths.refuses("HEAD", identity), identity);
+            assertTrue(OboPaths.refuses("POST", identity), identity);
+        }
+        assertTrue(OboPaths.refuses("GET", "/libs/granite/security/search/authorizables.json"));
         for (String content : new String[] {"/content/site", "/content/dam/a.jpg", "/api/assets/x.json", "/bin/querybuilder.json",
-                "/bin/replicate.json", "/bin/wcmcommand", "/libs/granite/csrf/token.json", "/conf/site/settings/wcm/templates"}) {
-            assertFalse(paths.refuses("POST", content), content);
+                "/bin/replicate.json", "/bin/wcmcommand", "/libs/granite/csrf/token.json", "/conf/site/settings/wcm/templates",
+                "/etc/packages/x.zip", "/home/users/a/author", "/etc/cloudservices/x", "/crx"}) {
+            assertFalse(OboPaths.refuses("POST", content), content);
         }
     }
 }

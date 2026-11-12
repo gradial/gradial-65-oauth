@@ -20,12 +20,4 @@ public @interface OboConfiguration {
     @AttributeDefinition(description = "Let `admin` and members of `administrators` connect. Delegation then grants them "
             + "full administrative access, so leave this off unless a deployment explicitly needs it")
     boolean allowAdministrators() default false;
-    @AttributeDefinition(description = "Path prefixes a delegated session may not call (prefix, descendants, selectors and "
-            + "extensions). Prefix with 'write:' to refuse only non-GET methods. Empty uses the defaults. "
-            + "/bin/gradial/obo, /oauth and /libs/granite/oauth are always refused")
-    String[] deniedPaths() default {
-        "/crx", "/system", "/etc/packages", "/libs/granite/security", "/libs/cq/security",
-        "/libs/granite/operations", "/libs/granite/backup", "/libs/granite/cluster", "/libs/granite/distribution",
-        "/etc/cloudservices", "write:/home", "write:/etc/replication"
-    };
 }

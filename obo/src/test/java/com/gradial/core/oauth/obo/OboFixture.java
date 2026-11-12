@@ -77,7 +77,7 @@ final class OboFixture {
         when(config.redirectUris()).thenReturn(new String[] {REDIRECT});
         when(config.accessTokenSeconds()).thenReturn(300);
         when(config.grantSeconds()).thenReturn(86400);
-        service.activate(config);
+        service.activate(config, java.util.Collections.emptyMap());
     }
 
     static String idOf(String token) { return token.substring(4, token.indexOf('.')); }

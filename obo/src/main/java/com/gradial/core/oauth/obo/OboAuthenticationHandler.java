@@ -56,7 +56,7 @@ public class OboAuthenticationHandler implements AuthenticationHandler, Authenti
             denyDelegation(response);
             return AuthenticationInfo.DOING_AUTH;
         }
-        if (current.paths().refuses(request.getMethod(), request.getRequestURI())) {
+        if (OboPaths.refuses(request.getMethod(), request.getRequestURI())) {
             OboAudit.event("path_refused", null, null, "method=" + request.getMethod() + " path=" + request.getRequestURI());
             denyDelegation(response);
             return AuthenticationInfo.DOING_AUTH;

@@ -3,83 +3,75 @@ package com.gradial.core.oauth.obo;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Deque;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
-import java.util.Set;
 
 /**
- * Paths a delegated session may never call. Delegation carries the user's whole AEM authority, but
- * Gradial needs only content APIs, so administrative surfaces are refused even for users who could
- * use them in a browser. An entry {@code write:/path} refuses only methods other than GET and HEAD.
+ * The fixed set of credential and administration endpoints a delegated session may never call. It is not
+ * configurable. Everything else, including every content write, runs with the consenting user's own AEM
+ * ACLs: delegation never grants more than that user has, and this list does not try to narrow content access.
+ *
+ * <p>Matched on the request path only (the normalized request URI, and in {@link OboAuthenticationFilter}
+ * also the Sling resource the request resolved to). Request bodies and parameters are not inspected: three
+ * review rounds showed that a guard which re-derives Sling POST targets from parameters cannot match
+ * {@code SlingPostServlet}'s own resolution (suffixes, {@code @} names, multipart values, {@code :operation=import},
+ * recursive deletes, other POST servlets), so that guard was removed.
  */
 final class OboPaths {
-    static final String WRITE = "write:";
-    /** Always refused; configuration cannot remove these. They mint or manage credentials. */
-    static final List<String> BASELINE = Collections.unmodifiableList(Arrays.asList(
-            "/bin/gradial/obo", "/oauth", "/libs/granite/oauth"));
-    /** Default {@code deniedPaths}: package, console, CRX, security, operations and cloud-config surfaces. */
-    static final String[] DEFAULTS = {
-        "/crx", "/system", "/etc/packages", "/libs/granite/security", "/libs/cq/security",
-        "/libs/granite/operations", "/libs/granite/backup", "/libs/granite/cluster", "/libs/granite/distribution",
-        "/etc/cloudservices", WRITE + "/home", WRITE + "/etc/replication"
-    };
-    /** Read-only identity endpoints Gradial uses to confirm who it acts as. GET and HEAD only. */
-    static final List<String> READABLE = Collections.unmodifiableList(Arrays.asList(
-            "/libs/granite/security/currentuser", "/libs/granite/security/whoami",
-            "/libs/granite/security/userinfo", "/libs/cq/security/userinfo"));
-
-    private final List<String> denied;
-    private final List<String> writeDenied;
-
-    private OboPaths(List<String> denied, List<String> writeDenied) {
-        this.denied = denied;
-        this.writeDenied = writeDenied;
-    }
-
-    static OboPaths of(String[] configured) {
-        Set<String> all = new LinkedHashSet<>(BASELINE);
-        Set<String> writes = new LinkedHashSet<>();
-        for (String entry : configured == null || configured.length == 0 ? DEFAULTS : configured) {
-            if (entry == null) continue;
-            String value = entry.trim();
-            boolean write = value.toLowerCase(Locale.ROOT).startsWith(WRITE);
-            String path = normalize(write ? value.substring(WRITE.length()).trim() : value);
-            if (path == null || path.length() < 2) continue;
-            (write ? writes : all).add(path.toLowerCase(Locale.ROOT));
-        }
-        return new OboPaths(Collections.unmodifiableList(new ArrayList<>(all)),
-                Collections.unmodifiableList(new ArrayList<>(writes)));
-    }
-
-    List<String> denied() { return denied; }
-    List<String> writeDenied() { return writeDenied; }
-
-    /** True when a delegated request for this raw request URI must be refused (URI decoding applies). */
-    boolean refuses(String method, String path) {
-        String normalized = normalize(path);
-        return normalized == null || refusesRepositoryPath(method, normalized);
-    }
+    /**
+     * Prefix, its descendants and its selector or extension forms; compared in lower case.
+     *
+     * <ul>
+     * <li>{@code /bin/gradial/obo}: this bundle's own authorize, token and revoke endpoints
+     * ({@link OboServlet}, {@code OboAuthenticationHandler.TOKEN_PATH}/{@code REVOKE_PATH}). A delegated token must
+     * never mint, refresh, consent to or revoke delegation.</li>
+     * <li>{@code /oauth}: Granite OAuth server endpoints ({@code com.adobe.granite.oauth.server}, for example
+     * {@code /oauth/token} served by {@code OAuth2TokenEndpointServlet}). They mint AEM OAuth tokens.</li>
+     * <li>{@code /libs/granite/oauth}: Granite OAuth consent and client management ({@code /libs/granite/oauth/authorize},
+     * served by {@code OAuth2AuthorizationCodeIssuer}; {@code /libs/granite/oauth/content/clients.html} and
+     * {@code newclient.html}). They issue codes and create OAuth clients with secrets.</li>
+     * <li>{@code /crx/packmgr}: Package Manager. Installing a package writes code, OSGi configuration and ACLs, and
+     * repoinit configurations it carries run as the repository administrator.</li>
+     * <li>{@code /crx/de}: CRXDE Lite, a generic repository editor.</li>
+     * <li>{@code /crx/server}: JCR remoting (WebDAV and DavEx). A second, non-Sling write protocol for any
+     * repository operation, including access control changes.</li>
+     * <li>{@code /libs/granite/security}: user, group, permission and keystore administration (for example
+     * {@code /libs/granite/security/post/authorizables}). Three read-only identity endpoints are allowed, see
+     * {@link #IDENTITY}.</li>
+     * <li>{@code /system/console}: the Felix web console (bundles, OSGi configuration, JMX).</li>
+     * </ul>
+     */
+    static final List<String> REFUSED = Collections.unmodifiableList(Arrays.asList(
+            "/bin/gradial/obo", "/oauth", "/libs/granite/oauth", "/crx/packmgr", "/crx/de", "/crx/server",
+            "/libs/granite/security", "/system/console"));
 
     /**
-     * True when a delegated request may not act on this exact repository path. The path is compared as
-     * given: no URI decoding, no query stripping, no dot-segment resolution. Callers pass only paths
-     * already proven absolute and normalized.
+     * Read-only identity endpoints under {@code /libs/granite/security}, allowed for GET and HEAD only. Gradial reads
+     * them to confirm whom a run acts as: gradial/v2 {@code packages/server/aem/src/query/aem-principal.ts:8} and
+     * {@code instance-metadata.ts:289} (currentuser.json), {@code permissions.ts:179-181} (currentuser, whoami,
+     * userinfo), {@code service-user-probe.ts:38} (currentuser.json?props=memberOf).
      */
-    boolean refusesRepositoryPath(String method, String path) {
+    static final List<String> IDENTITY = Collections.unmodifiableList(Arrays.asList(
+            "/libs/granite/security/currentuser", "/libs/granite/security/whoami", "/libs/granite/security/userinfo"));
+
+    private OboPaths() { }
+
+    /** True when a delegated request for this raw request URI must be refused (URI decoding applies). */
+    static boolean refuses(String method, String rawUri) {
+        String normalized = normalize(rawUri);
+        return normalized == null || refusesPath(method, normalized);
+    }
+
+    /** True when a delegated request may not act on this already-normalized path. */
+    static boolean refusesPath(String method, String path) {
         String lower = path.toLowerCase(Locale.ROOT);
-        boolean read = "GET".equalsIgnoreCase(method) || "HEAD".equalsIgnoreCase(method);
-        if (read) {
-            for (String allowed : READABLE) if (covers(allowed, lower)) return false;
+        if ("GET".equalsIgnoreCase(method) || "HEAD".equalsIgnoreCase(method)) {
+            for (String allowed : IDENTITY) if (covers(allowed, lower)) return false;
         }
-        for (String prefix : denied) if (covers(prefix, lower)) return true;
-        if (!read) {
-            for (String prefix : writeDenied) if (covers(prefix, lower)) return true;
-        }
+        for (String prefix : REFUSED) if (covers(prefix, lower)) return true;
         return false;
     }
 

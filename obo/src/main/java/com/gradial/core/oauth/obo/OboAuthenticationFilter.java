@@ -20,8 +20,8 @@ import org.osgi.service.component.annotations.ReferencePolicy;
 /**
  * Last line for delegated Sling requests: the session must be the one the delegation login module
  * opened for this request's credential (a cookie handler or a sudo switch cannot substitute another),
- * and no path the request can act on (see {@link OboRequestTargets}) may be a denied surface. No
- * repository read.
+ * and neither the request path nor the resolved resource may be one of {@link OboPaths#REFUSED}. Content
+ * access is the consenting user's own ACLs. No repository read and no request-body inspection.
  */
 @Component(service = Filter.class,
         property = {"sling.filter.scope=REQUEST", "service.ranking:Integer=10000"})
@@ -56,43 +56,18 @@ public class OboAuthenticationFilter implements Filter {
             refuse(httpResponse);
             return;
         }
+        // The handler already refused these by request URI. The resolved resource is checked too, so a Sling
+        // mapping (/etc/map, sling:alias, vanity URL) onto one of these paths is refused as well. No body parsing.
         String method = slingRequest.getMethod();
-        try {
-            for (OboRequestTargets.Target target : OboRequestTargets.of(slingRequest)) {
-                if (current.paths().refusesRepositoryPath(method, target.path)) {
-                    OboAudit.event("path_refused", slingRequest.getRemoteUser(), null,
-                            "method=" + method + " parameter=" + target.parameter + " path=" + target.path);
-                    refuseTarget(httpResponse, target.parameter + " targets a path that Gradial delegated sessions cannot change");
-                    return;
-                }
-            }
-        } catch (OboRequestTargets.UnprovableTarget e) {
-            OboAudit.event("path_refused", slingRequest.getRemoteUser(), null,
-                    "method=" + method + " parameter=" + e.parameter + " reason=unprovable_target");
-            refuseTarget(httpResponse, e.getMessage());
+        String resourcePath = slingRequest.getResource() != null ? slingRequest.getResource().getPath() : null;
+        if (OboPaths.refuses(method, slingRequest.getRequestURI())
+                || (resourcePath != null && OboPaths.refusesPath(method, resourcePath))) {
+            OboAudit.event("path_refused", slingRequest.getRemoteUser(), null, "method=" + method + " path=" + slingRequest.getRequestURI());
+            refuse(httpResponse);
             return;
         }
         httpResponse.setHeader("Cache-Control", "no-store");
         chain.doFilter(request, response);
-    }
-
-    /** 403 that names the parameter, so a client can tell a refused target from an AEM permission error. */
-    private static void refuseTarget(HttpServletResponse response, String description) throws IOException {
-        response.setStatus(HttpServletResponse.SC_FORBIDDEN);
-        response.setHeader("Cache-Control", "no-store");
-        response.setContentType("application/json;charset=UTF-8");
-        response.getWriter().write("{\"error\":\"access_denied\",\"error_description\":\"" + json(description) + "\"}");
-        response.flushBuffer();
-    }
-
-    private static String json(String value) {
-        StringBuilder out = new StringBuilder(value.length());
-        for (char c : value.toCharArray()) {
-            if (c == '"' || c == '\\') out.append('\\').append(c);
-            else if (c < 0x20) out.append(' ');
-            else out.append(c);
-        }
-        return out.toString();
     }
 
     private static void refuse(HttpServletResponse response) throws IOException {

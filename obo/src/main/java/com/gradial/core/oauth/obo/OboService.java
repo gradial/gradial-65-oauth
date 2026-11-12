@@ -11,6 +11,7 @@ import java.util.Base64;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
@@ -73,16 +74,22 @@ public class OboService implements Runnable {
     private OboConfiguration config;
     private Set<String> redirects;
     private String configurationHash;
-    private OboPaths paths;
     private int cleanupCursor;
 
+    /** Removed property; a value left in an existing configuration is ignored. */
+    static final String REMOVED_DENIED_PATHS = "deniedPaths";
+
     @Activate
-    protected void activate(OboConfiguration config) {
+    protected void activate(OboConfiguration config, Map<String, Object> properties) {
         this.config = config;
+        if (properties != null && properties.containsKey(REMOVED_DENIED_PATHS)) {
+            LOG.warn("The deniedPaths property of the Gradial user-delegation configuration is no longer used and is "
+                    + "ignored. Delegated sessions act with the consenting user's own ACLs; a fixed set of credential and "
+                    + "administration endpoints is always refused. Remove the property to silence this warning.");
+        }
         if (!config.enabled()) {
             redirects = Collections.emptySet();
             configurationHash = "disabled";
-            paths = OboPaths.of(config.deniedPaths());
             return;
         }
         require(!config.clientId().isEmpty(), "clientId is required");
@@ -96,7 +103,6 @@ public class OboService implements Runnable {
                 && (origin.getRawPath() == null || origin.getRawPath().isEmpty()), "publicOrigin must be an origin without a path");
         for (String redirect : config.redirectUris()) checkedUri(redirect);
         redirects = Collections.unmodifiableSet(new HashSet<>(Arrays.asList(config.redirectUris())));
-        paths = OboPaths.of(config.deniedPaths());
         // Only the client identity binds grants. Callbacks, origin and lifetimes can change without revoking
         // everyone; rotating the client secret deliberately ends every grant.
         configurationHash = hash(config.clientId() + "\n" + config.clientSecretSha256());
@@ -121,7 +127,6 @@ public class OboService implements Runnable {
     boolean enabled() { return config.enabled(); }
     boolean allowAdministrators() { return config.allowAdministrators(); }
     String origin() { return config.publicOrigin(); }
-    OboPaths paths() { return paths; }
 
     /** True when the authorize request names this deployment's client; only then may errors go to its callback. */
     boolean knownClient(String client) { return enabled() && client != null && config.clientId().equals(client); }

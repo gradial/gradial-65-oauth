@@ -19,9 +19,7 @@ class OboAuthenticationFilterTest {
     private static final String TOKEN = "goa_0123456789abcdefABCDEFGHIJKLMNOPQRSTUVWXYZa.ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq";
 
     private static OboService service() {
-        OboService service = mock(OboService.class);
-        when(service.paths()).thenReturn(OboPaths.of(null));
-        return service;
+        return mock(OboService.class);
     }
 
     private OboAuthenticationFilter filter(OboService service) throws Exception {
@@ -47,6 +45,10 @@ class OboAuthenticationFilterTest {
         when(request.getRequestPathInfo()).thenReturn(info);
         when(request.getMethod()).thenReturn(method);
         when(info.getResourcePath()).thenReturn(path);
+        when(request.getRequestURI()).thenReturn(path);
+        org.apache.sling.api.resource.Resource resource = mock(org.apache.sling.api.resource.Resource.class);
+        when(resource.getPath()).thenReturn(path);
+        when(request.getResource()).thenReturn(resource);
         when(resolver.getUserID()).thenReturn(user);
         when(request.getRemoteUser()).thenReturn(user);
         if (stampedToken != null) {
@@ -147,20 +149,40 @@ class OboAuthenticationFilterTest {
     }
 
     @Test
-    void deniedResolvedResourcePathsAreRefusedAndContentPathsAreNot() throws Exception {
+    void theFixedCredentialAndAdministrationEndpointsAreRefused() throws Exception {
         String[][] refused = {
-            {"POST", "/crx/packmgr/service.jsp"}, {"GET", "/libs/granite/security/content/useradmin"},
-            {"POST", "/bin/gradial/obo/token"}, {"POST", "/oauth/token"}, {"GET", "/etc/packages/x.zip"},
-            {"POST", "/home/users/a/author"}, {"POST", "/libs/granite/security/post/authorizables"}};
+            {"POST", "/bin/gradial/obo/token"}, {"POST", "/oauth/token"}, {"GET", "/libs/granite/oauth/content/clients.html"},
+            {"POST", "/crx/packmgr/service.jsp"}, {"GET", "/crx/de/index.jsp"}, {"PROPFIND", "/crx/server/crx.default/jcr:root/content"},
+            {"POST", "/libs/granite/security/post/authorizables"}, {"GET", "/libs/granite/security/content/useradmin.html"},
+            {"POST", "/libs/granite/security/currentuser.json"}, {"GET", "/system/console/bundles.json"}};
         for (String[] call : refused) {
             HttpServletResponse response = response();
             FilterChain chain = mock(FilterChain.class);
             filter(service()).doFilter(request("GradialOBO " + TOKEN, "writer", TOKEN, call[0], call[1]), response, chain);
             refused(response, chain);
         }
+    }
+
+    @Test
+    void aMappedUriThatResolvesToARefusedResourceIsRefused() throws Exception {
+        SlingHttpServletRequest request = request("GradialOBO " + TOKEN, "writer", TOKEN, "POST", "/content/vanity");
+        org.apache.sling.api.resource.Resource packmgr = mock(org.apache.sling.api.resource.Resource.class);
+        when(packmgr.getPath()).thenReturn("/crx/packmgr/service");
+        when(request.getResource()).thenReturn(packmgr);
+        HttpServletResponse response = response();
+        FilterChain chain = mock(FilterChain.class);
+        filter(service()).doFilter(request, response, chain);
+        refused(response, chain);
+    }
+
+    @Test
+    void everythingElseIsLeftToTheUsersOwnAcls() throws Exception {
         String[][] allowed = {
-            {"POST", "/content/site/en"}, {"GET", "/libs/granite/security/currentuser"}, {"GET", "/home/users/a/author"},
-            {"POST", "/content/dam/site/asset.jpg"}, {"GET", "/libs/granite/csrf/token"}};
+            {"POST", "/content/site/en"}, {"GET", "/libs/granite/security/currentuser.json"},
+            {"GET", "/libs/granite/security/whoami.json"}, {"HEAD", "/libs/granite/security/userinfo.json"},
+            // Formerly in the configurable defaults; now governed only by the consenting user's ACLs.
+            {"POST", "/home/users/a/author"}, {"GET", "/etc/packages/x.zip"}, {"POST", "/etc/cloudservices/x"},
+            {"POST", "/bin/wcmcommand"}, {"POST", "/bin/replicate.json"}, {"GET", "/libs/granite/csrf/token.json"}};
         for (String[] call : allowed) {
             SlingHttpServletRequest request = request("GradialOBO " + TOKEN, "writer", TOKEN, call[0], call[1]);
             HttpServletResponse response = response();
@@ -169,108 +191,18 @@ class OboAuthenticationFilterTest {
             verify(chain).doFilter(request, response);
         }
     }
-    /** A delegated POST to an allowed resource that carries these Sling POST parameters. */
-    private SlingHttpServletRequest postWith(String resourcePath, String[][] parameters) {
-        SlingHttpServletRequest request = request("GradialOBO " + TOKEN, "writer", TOKEN, "POST", resourcePath);
-        org.apache.sling.api.resource.Resource resource = mock(org.apache.sling.api.resource.Resource.class);
-        when(resource.getPath()).thenReturn(resourcePath);
-        when(request.getResource()).thenReturn(resource);
-        java.util.Map<String, org.apache.sling.api.request.RequestParameter[]> map = new java.util.LinkedHashMap<>();
-        for (String[] p : parameters) {
-            org.apache.sling.api.request.RequestParameter value = mock(org.apache.sling.api.request.RequestParameter.class);
-            when(value.isFormField()).thenReturn(!"FILE".equals(p.length > 2 ? p[2] : ""));
-            when(value.getString()).thenReturn(p[1]);
-            map.put(p[0], new org.apache.sling.api.request.RequestParameter[] {value});
-        }
-        org.apache.sling.api.request.RequestParameterMap parameterMap = mock(org.apache.sling.api.request.RequestParameterMap.class);
-        when(parameterMap.entrySet()).thenReturn(map.entrySet());
-        when(request.getRequestParameterMap()).thenReturn(parameterMap);
-        return request;
-    }
 
     @Test
-    void targetsWhoseFinalPathIsNotExactlyKnownAreRefusedNamingTheParameter() throws Exception {
-        Object[][] cases = {
-            // Round-two review: a form value is not a URL; ? and .. must not be resolved by the guard.
-            {":dest", new String[][] {{":operation", "copy"}, {":dest", "/content/ignored?x/../../etc/cloudservices/customer/added"}}},
-            // Sling appends the source name to a trailing-slash :dest, so the final child is not the value.
-            {":dest", new String[][] {{":operation", "copy"}, {":dest", "/content/site/"}}},
-            {":dest", new String[][] {{":operation", "move"}, {":dest", "archive"}}},
-            {":dest", new String[][] {{":operation", "copy"}, {":dest", "../../../crx/x"}}},
-            {":applyTo", new String[][] {{":operation", "delete"}, {":applyTo", "/content/site/*"}}},
-            {":applyTo", new String[][] {{":operation", "delete"}, {":applyTo", "../../../etc/cloudservices/customer"}}},
-            {":applyTo", new String[][] {{":operation", "delete"}, {":applyTo", "/content//site"}}},
-            {":applyTo", new String[][] {{":operation", "delete"}, {":applyTo", "/content/./site"}}},
-            {":applyTo", new String[][] {{":operation", "delete"}, {":applyTo", "/content/site#x"}}},
-            {"./imported@MoveFrom", new String[][] {{"./imported@MoveFrom", "relative/source"}}},
-            {"./copy@CopyFrom", new String[][] {{"./copy@CopyFrom", "/content/a/../../etc/packages/x.zip"}}},
-            {"../../../home/users/a/author/profile/email", new String[][] {{"../../../home/users/a/author/profile/email", "x"}}},
-            {"/content/a/./b", new String[][] {{"/content/a/./b", "x"}}}};
-        for (Object[] c : cases) {
-            HttpServletResponse response = response();
-            FilterChain chain = mock(FilterChain.class);
-            filter(service()).doFilter(postWith("/content/site/en", (String[][]) c[1]), response, chain);
-            refused(response, chain);
-            assertTrue(body.toString().contains("\"access_denied\"") && body.toString().contains((String) c[0]),
-                    "the 403 names " + c[0] + ": " + body);
-        }
-    }
-
-    @Test
-    void exactTargetsAreCheckedAgainstTheDenyList() throws Exception {
-        String[][][] denied = {
-            {{":operation", "delete"}, {":applyTo", "/etc/cloudservices/customer"}},
-            {{":operation", "move"}, {":dest", "/etc/packages/x"}},
-            {{"/etc/cloudservices/customer/prop", "value"}},
-            {{"./imported@MoveFrom", "/etc/cloudservices/customer"}}};
-        for (String[][] parameters : denied) {
-            HttpServletResponse response = response();
-            FilterChain chain = mock(FilterChain.class);
-            filter(service()).doFilter(postWith("/content/site/en", parameters), response, chain);
-            refused(response, chain);
-            assertTrue(body.toString().contains("cannot change"), body.toString());
-        }
-        // A relative name is joined to the addressed resource exactly, so it is checked where it lands.
-        HttpServletResponse response = response();
-        FilterChain chain = mock(FilterChain.class);
-        filter(service()).doFilter(postWith("/etc", new String[][] {{"cloudservices/customer/prop", "x"}}), response, chain);
-        refused(response, chain);
-    }
-
-    @Test
-    void gradialsOwnCopyMoveCreateAndDeleteRequestsStillWork() throws Exception {
-        String[][][] allowed = {
-            // packages/server/aem/src/query/jcr.ts copyNode / moveNode: absolute :dest
-            {{":operation", "copy"}, {":dest", "/content/site/en/copy-of-page"}},
-            {{":operation", "move"}, {":dest", "/content/site/en/moved-page"}, {":replace", "true"}},
-            // jcr.ts createNode with copyFrom: ./@CopyFrom with an absolute source
-            {{"jcr:primaryType", "nt:unstructured"}, {"./@CopyFrom", "/content/site/en/template-node"}, {":name", "new"}, {":status", "browser"}},
-            // cms-platform-aem forms-bridge copyTemplatePage: absolute :dest under /content/forms
-            {{":operation", "copy"}, {":dest", "/content/forms/af/site/new-form"}, {":replace", "false"}},
-            // delete addresses the resource itself
-            {{":operation", "delete"}},
-            {{":operation", "delete"}, {":applyTo", "/content/site/en/old-page"}},
-            // ordinary property writes, including path-valued properties and uploads
-            {{"jcr:title", "Hello"}, {"fileReference", "/content/dam/site/image.jpg"}},
-            {{"./jcr:content/jcr:title", "Hi"}, {":redirect", "/crx/should-not-matter"}},
-            {{"jcr:content/cq:cloudserviceconfigs", "/etc/cloudservices/launch/site"}},
-            {{"file", "/etc/packages/looks-like-a-path", "FILE"}}};
-        for (String[][] parameters : allowed) {
-            SlingHttpServletRequest request = postWith("/content/site/en", parameters);
-            HttpServletResponse response = response();
-            FilterChain chain = mock(FilterChain.class);
-            filter(service()).doFilter(request, response, chain);
-            verify(chain).doFilter(request, response);
-        }
-    }
-
-    @Test
-    void readsCheckOnlyTheAddressedResource() throws Exception {
-        SlingHttpServletRequest request = postWith("/bin/querybuilder.json", new String[][] {{"path", "/content"}, {"p.limit", "1"}, {"../x", "y"}});
-        when(request.getMethod()).thenReturn("GET");
+    void requestBodiesAndParametersAreNotInspected() throws Exception {
+        SlingHttpServletRequest request = request("GradialOBO " + TOKEN, "writer", TOKEN, "POST", "/content/site/en");
         HttpServletResponse response = response();
         FilterChain chain = mock(FilterChain.class);
         filter(service()).doFilter(request, response, chain);
         verify(chain).doFilter(request, response);
+        verify(request, never()).getRequestParameterMap();
+        verify(request, never()).getParameterMap();
+        // The impersonation guard reads only the sudo parameter names, to refuse explicit sudo.
+        verify(request, never()).getParameter(argThat((String name) -> !"sudo".equals(name) && !"sling.sudo".equals(name)));
+        verify(request, never()).getParameterValues(anyString());
     }
 }
