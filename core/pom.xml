@@ -61,8 +61,12 @@
                         </goals>
                         <configuration>
                             <bnd><![CDATA[
+# Repoinit is needed only by ScopeReaderRepositoryInitializer. Optional, so gradial.core (and every
+# OAuth scope it registers) still resolves where these packages are missing; that component then stays
+# unsatisfied and scopes register with their path unchecked. See ImportPackageResolutionTest.
 Import-Package: javax.annotation;version=0.0.0,\
-  org.apache.sling.repoinit.parser;version="[1.0,2)",\
+  org.apache.sling.repoinit.parser;version="[1.0,2)";resolution:=optional,\
+  org.apache.sling.jcr.repoinit;resolution:=optional,\
   *
                                 ]]></bnd>
                         </configuration>
@@ -101,6 +105,12 @@ Import-Package: javax.annotation;version=0.0.0,\
     </build>
 
     <dependencies>
+        <dependency>
+            <groupId>org.apache.felix</groupId>
+            <artifactId>org.apache.felix.framework</artifactId>
+            <version>7.0.5</version>
+            <scope>test</scope>
+        </dependency>
         <!-- Real Oak plus Sling repoinit at AEM 6.5 SP25's versions (LTS on JDK 14+), first on the test classpath, to
              execute the shipped repoinit script. -->
         <dependency><groupId>com.google.guava</groupId><artifactId>guava</artifactId><version>${test.guava.version}</version><scope>test</scope></dependency>
