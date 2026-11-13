@@ -60,6 +60,15 @@ class ImportPackageResolutionTest {
     }
 
     @Test
+    void noRepoinitPackageIsImported() throws Exception {
+        // The AEM 6.5 API controller (FilterResolverHookFactory) refuses to wire customer bundles to
+        // org.apache.sling.repoinit.parser, which would leave gradial.obo unresolved on AEM 6.5.
+        for (String pkg : imports(manifest()).keySet()) {
+            assertFalse(pkg.startsWith("org.apache.sling.repoinit") || pkg.startsWith("org.apache.sling.jcr.repoinit"), pkg);
+        }
+    }
+
+    @Test
     void gradialOboResolvesAgainstTheOakBundlesOfAem65Sp25AndAem65Lts() throws Exception {
         Manifest manifest = manifest();
         File obo = jarOf(manifest, "gradial-obo.jar");

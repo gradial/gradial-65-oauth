@@ -9,7 +9,7 @@ import java.nio.file.Paths;
 
 import org.junit.jupiter.api.Test;
 
-/** Guards the least-privilege shape of the service user that the Author configuration creates. */
+/** Guards the least-privilege shape of the reference repoinit script; RepositoryInitEquivalenceTest proves the Java initializer applies the same. */
 class RepositoryInitPolicyTest {
     private static String script() throws Exception {
         return RepositoryInitScriptTest.shippedScript();

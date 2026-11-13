@@ -28,9 +28,9 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.junit.jupiter.api.Test;
 
 /**
- * Runs the shipped repoinit script with the Oak and Sling repoinit versions of AEM 6.5 SP25. A failing
- * repoinit script stops SlingRepository, so the script must apply cleanly to every state a customer
- * repository can already be in, and to itself.
+ * Runs the Java initializer on real Oak (the AEM 6.5 SP25 or 6.5 LTS stack, by JDK). It must apply cleanly to
+ * every state a customer repository can already be in, and to itself. The repoinit script it mirrors is only the
+ * reference for {@link RepositoryInitEquivalenceTest}.
  */
 class RepositoryInitScriptTest {
     private static final String SLING_TYPES = "<sling='http://sling.apache.org/jcr/sling/1.0'>\n"
@@ -57,16 +57,24 @@ class RepositoryInitScriptTest {
 
     static String shippedScript() throws Exception {
         StringBuilder text = new StringBuilder();
-        try (java.io.Reader reader = OboRepositoryInitializer.script()) {
+        try (java.io.Reader reader = new java.io.InputStreamReader(
+                RepositoryInitScriptTest.class.getResourceAsStream("gradial-obo.repoinit"), StandardCharsets.UTF_8)) {
             char[] buffer = new char[4096];
             for (int n; (n = reader.read(buffer)) > 0;) text.append(buffer, 0, n);
         }
         return text.toString();
     }
 
+    /** The reference: the repoinit script run by real Sling repoinit. */
     private void apply(String script) throws Exception {
         new JcrRepoInitOpsProcessorImpl().apply(admin, new RepoInitParserService().parse(new StringReader(script)));
         admin.save();
+    }
+
+    /** The shipped setup: the Java initializer. */
+    private void setUp() throws Exception {
+        assertTrue(initializer().apply(sling()));
+        admin.refresh(false);
     }
 
     private void storeAcceptsRecords() throws Exception {
@@ -84,8 +92,8 @@ class RepositoryInitScriptTest {
             admin.getNode("/var").addNode("gradial", existingType).addNode("zz-customer", "nt:folder");
             admin.save();
         }
-        apply(shippedScript());
-        apply(shippedScript());
+        setUp();
+        setUp();
         storeAcceptsRecords();
         assertTrue(((JackrabbitSession) admin).getUserManager().getAuthorizable("gradial-obo-state") instanceof User);
         if (!existingType.isEmpty()) {
@@ -99,7 +107,7 @@ class RepositoryInitScriptTest {
         Node obo = admin.getNode("/var").addNode("gradial", "nt:unstructured").addNode("obo", "nt:unstructured");
         obo.addNode("grants", "nt:unstructured").addNode("ab", "oak:Unstructured");
         admin.save();
-        apply(shippedScript());
+        setUp();
         assertTrue(admin.nodeExists("/var/gradial/obo/grants/ab"), "pre-release records are left for cleanup");
         assertTrue(admin.nodeExists(OboService.CONSENTS));
     }
@@ -111,7 +119,7 @@ class RepositoryInitScriptTest {
         assertThrows(Exception.class, () -> apply("create path (oak:Unstructured) /var/gradial/obo/grants"),
                 "regression guard: oak:Unstructured cannot be a child of nt:folder");
         admin.refresh(false);
-        apply(shippedScript());
+        setUp();
     }
 
     @Test
@@ -121,7 +129,7 @@ class RepositoryInitScriptTest {
         users.createUser("zz-admin", "zz-admin-password");
         ((Group) users.getAuthorizable("administrators")).addMember(users.getAuthorizable("zz-admin"));
         admin.save();
-        apply(shippedScript());
+        setUp();
         storeAcceptsRecords();
 
         Session author = repository.login(new SimpleCredentials("zz-author", "zz-author-password".toCharArray()));
@@ -150,7 +158,7 @@ class RepositoryInitScriptTest {
         for (int i = 0; i < 150; i++) administrators.addMember(users.createUser("zz-member-" + i, null));
         admin.save();
         assertTrue(admin.nodeExists(administrators.getPath() + "/rep:membersList"), "fixture must use the overflow list");
-        apply(shippedScript());
+        setUp();
 
         Session service = admin.impersonate(new SimpleCredentials("gradial-obo-state", new char[0]));
         try {
@@ -164,13 +172,7 @@ class RepositoryInitScriptTest {
         } finally { service.logout(); }
     }
     private OboRepositoryInitializer initializer() throws Exception {
-        OboRepositoryInitializer initializer = new OboRepositoryInitializer();
-        for (String[] f : new String[][] {{"parser", ""}, {"processor", ""}}) {
-            java.lang.reflect.Field field = OboRepositoryInitializer.class.getDeclaredField(f[0]);
-            field.setAccessible(true);
-            field.set(initializer, "parser".equals(f[0]) ? new RepoInitParserService() : new JcrRepoInitOpsProcessorImpl());
-        }
-        return initializer;
+        return new OboRepositoryInitializer();
     }
 
     private org.apache.sling.jcr.api.SlingRepository sling() throws Exception {
