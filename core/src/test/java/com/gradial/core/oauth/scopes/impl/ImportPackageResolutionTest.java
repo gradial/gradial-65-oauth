@@ -39,10 +39,11 @@ import org.osgi.framework.wiring.BundleWiring;
 import org.osgi.framework.wiring.FrameworkWiring;
 
 /**
- * gradial.core must resolve, and its scope registrars must load, on an AEM where Sling repoinit
- * ({@code org.apache.sling.repoinit.parser}, {@code org.apache.sling.jcr.repoinit}) is not available.
- * A mandatory import of either would leave the bundle INSTALLED, and every OAuth scope it registers
- * would disappear.
+ * gradial.core must not import Sling repoinit ({@code org.apache.sling.repoinit.*},
+ * {@code org.apache.sling.jcr.repoinit}): AEM 6.5's API controller
+ * ({@code com.adobe.granite.apicontroller.FilterResolverHookFactory}) refuses to wire customer bundles to
+ * {@code org.apache.sling.repoinit.parser}, which would stop the scope-reader initializer from linking.
+ * It must also resolve, and every class load, with those packages absent.
  *
  * <p>The resolver check runs the real Apache Felix framework on the manifest bnd generated into
  * target/classes, against a generated bundle that exports every other package and capability that
@@ -90,14 +91,14 @@ class ImportPackageResolutionTest {
     }
 
     @Test
-    void bothRepoinitPackagesAreOptionalImports() throws Exception {
+    void noRepoinitPackageIsImported() throws Exception {
         Map<String, String> imports = imports(manifest());
-        for (String pkg : REPOINIT) {
-            String clause = imports.get(pkg);
-            assertNotNull(clause, pkg + " is imported");
-            assertTrue(clause.contains("resolution:=optional"), clause);
-            System.out.println("Import-Package clause: " + clause);
+        assertFalse(imports.isEmpty());
+        for (String pkg : imports.keySet()) {
+            assertFalse(pkg.startsWith("org.apache.sling.repoinit") || pkg.startsWith("org.apache.sling.jcr.repoinit"),
+                    "AEM 6.5's API controller refuses wiring to repoinit packages: " + pkg);
         }
+        System.out.println("Import-Package: " + imports.values());
     }
 
     @Test
@@ -118,7 +119,7 @@ class ImportPackageResolutionTest {
     }
 
     @Test
-    void scopeRegistrarsLoadWithoutRepoinitClasses() throws Exception {
+    void registrarsAndInitializerLoadWithoutRepoinitClasses() throws Exception {
         try (HidingLoader loader = new HidingLoader(REPOINIT)) {
             for (String name : new String[] {DynamicScopeRegistrar.class.getName(),
                     DynamicScopeRegistrar.class.getName() + "$ConfiguredScope", ScopeReaderReady.class.getName()}) {
@@ -127,9 +128,11 @@ class ImportPackageResolutionTest {
                 type.getDeclaredMethods();
                 type.getDeclaredFields();
             }
-            // Control: the initializer, the only user of repoinit types, cannot link there.
-            Class<?> initializer = Class.forName(ScopeReaderRepositoryInitializer.class.getName(), false, loader);
-            assertThrows(NoClassDefFoundError.class, initializer::getDeclaredFields);
+            // The initializer must link without any repoinit class too.
+            Class<?> initializer = Class.forName(ScopeReaderRepositoryInitializer.class.getName(), true, loader);
+            assertSame(loader, initializer.getClassLoader());
+            initializer.getDeclaredMethods();
+            initializer.getDeclaredFields();
         }
     }
 

@@ -3,7 +3,6 @@ package com.gradial.core.oauth.scopes.impl;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
-import java.lang.reflect.Field;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -21,14 +20,12 @@ import org.apache.jackrabbit.oak.security.internal.SecurityProviderBuilder;
 import org.apache.jackrabbit.oak.spi.security.ConfigurationParameters;
 import org.apache.jackrabbit.oak.spi.security.user.UserConfiguration;
 import org.apache.sling.jcr.api.SlingRepository;
-import org.apache.sling.jcr.repoinit.impl.JcrRepoInitOpsProcessorImpl;
-import org.apache.sling.repoinit.parser.impl.RepoInitParserService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 /**
- * Runs {@link ScopeReaderRepositoryInitializer} on real Oak (AEM 6.5 SP25's Oak and repoinit, or 6.5 LTS's on
+ * Runs {@link ScopeReaderRepositoryInitializer} on real Oak (AEM 6.5 SP25's Oak, or 6.5 LTS's on
  * JDK 14+). It must set the service user up when it can, leave any other account with that ID untouched, and
  * never throw: a throwing initializer stops SlingRepository at startup.
  */
@@ -54,20 +51,12 @@ class ScopeReaderRepoinitTest {
         sling = mock(SlingRepository.class);
         when(sling.loginAdministrative(null)).thenAnswer(call -> repository.login(new SimpleCredentials("admin", "admin".toCharArray())));
         initializer = new ScopeReaderRepositoryInitializer();
-        inject("parser", new RepoInitParserService());
-        inject("processor", new JcrRepoInitOpsProcessorImpl());
     }
 
     @AfterEach
     void close() { admin.logout(); }
 
     private UserManager users() throws Exception { return ((JackrabbitSession) admin).getUserManager(); }
-
-    private void inject(String field, Object value) throws Exception {
-        Field f = ScopeReaderRepositoryInitializer.class.getDeclaredField(field);
-        f.setAccessible(true);
-        f.set(initializer, value);
-    }
 
     @Test
     void setsUpAReaderThatSeesNodesButNoPropertiesAndAppliesTwice() throws Exception {
@@ -134,8 +123,12 @@ class ScopeReaderRepoinitTest {
         SlingRepository broken = mock(SlingRepository.class);
         when(broken.loginAdministrative(null)).thenThrow(new javax.jcr.RepositoryException("unavailable"));
         assertDoesNotThrow(() -> initializer.processRepository(broken));
-        inject("processor", (org.apache.sling.jcr.repoinit.JcrRepoInitOpsProcessor) (s, ops) -> { throw new RuntimeException("boom"); });
-        assertDoesNotThrow(() -> initializer.processRepository(sling));
+        SlingRepository wrongSession = mock(SlingRepository.class);
+        when(wrongSession.loginAdministrative(null)).thenReturn(mock(Session.class));
+        assertDoesNotThrow(() -> initializer.processRepository(wrongSession));
+        SlingRepository linkage = mock(SlingRepository.class);
+        when(linkage.loginAdministrative(null)).thenThrow(new NoClassDefFoundError("x"));
+        assertDoesNotThrow(() -> initializer.processRepository(linkage));
     }
     @Test
     void theReaderMarkerIsRegisteredOnlyWhenTheUserIsInPlace() throws Exception {

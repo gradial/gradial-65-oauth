@@ -1,33 +1,36 @@
 package com.gradial.core.oauth.scopes.impl;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.io.Reader;
-import java.nio.charset.StandardCharsets;
-
 import javax.jcr.Session;
+import javax.jcr.security.AccessControlManager;
+import javax.jcr.security.AccessControlPolicy;
+import javax.jcr.security.AccessControlPolicyIterator;
+import javax.jcr.security.Privilege;
 
 import org.apache.jackrabbit.api.JackrabbitSession;
+import org.apache.jackrabbit.api.security.JackrabbitAccessControlList;
 import org.apache.jackrabbit.api.security.user.Authorizable;
 import org.apache.jackrabbit.api.security.user.User;
+import org.apache.jackrabbit.api.security.user.UserManager;
 import org.apache.sling.jcr.api.SlingRepository;
 import org.apache.sling.jcr.api.SlingRepositoryInitializer;
-import org.apache.sling.jcr.repoinit.JcrRepoInitOpsProcessor;
-import org.apache.sling.repoinit.parser.RepoInitParser;
 import org.osgi.framework.BundleContext;
 import org.osgi.framework.ServiceRegistration;
 import org.osgi.service.component.annotations.Activate;
 import org.osgi.service.component.annotations.Component;
 import org.osgi.service.component.annotations.ConfigurationPolicy;
 import org.osgi.service.component.annotations.Deactivate;
-import org.osgi.service.component.annotations.Reference;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
  * Creates the {@value DynamicScopeRegistrar#READER} service user that checks scope paths, applying the bundled
- * {@value #SCRIPT} with Sling's own {@link RepoInitParser} and {@link JcrRepoInitOpsProcessor} services.
+ * with the JCR and Jackrabbit APIs. The result is what these repoinit statements would produce:
+ * <pre>
+ * create service user gradial-oauth-scope-reader with path system/gradial
+ * set ACL for gradial-oauth-scope-reader
+ *   allow rep:readNodes on /
+ * end
+ * </pre>
  *
  * <p><b>Why Java, not a repoinit {@code .cfg.json}.</b> A {@code RepositoryInitializer~*.cfg.json} with
  * {@code create service user gradial-oauth-scope-reader} throws when a normal user or a group already has that ID
@@ -36,6 +39,12 @@ import org.slf4j.LoggerFactory;
  * registration ({@code AbstractSlingRepositoryManager.java:575-577} in jcr.base 3.2.0, "SlingRepository service
  * registration aborted"), so AEM would not start. Repoinit has no conditional or continue-on-error statement. This
  * class checks the ID first, leaves another account untouched, logs one ERROR and never throws.
+ *
+ * <p><b>Why not Sling's repoinit services.</b> AEM 6.5's API controller
+ * ({@code com.adobe.granite.apicontroller.FilterResolverHookFactory}) refuses to wire a customer bundle to
+ * {@code org.apache.sling.repoinit.parser}, so a component that used {@code RepoInitParser} could not link there
+ * and the user would never be created. AEM as 6.5 LTS does not refuse it, but the same code must work on both, so
+ * this class imports only {@code javax.jcr} and {@code org.apache.jackrabbit.api} packages.
  *
  * <p>An initializer registered after the repository is up runs at once, against the same master repository
  * ({@code AbstractSlingRepositoryManager.java:486-492}), so a package install sets the user up without a restart.
@@ -49,12 +58,8 @@ import org.slf4j.LoggerFactory;
 @Component(service = SlingRepositoryInitializer.class, configurationPolicy = ConfigurationPolicy.REQUIRE)
 public class ScopeReaderRepositoryInitializer implements SlingRepositoryInitializer {
     private static final Logger LOG = LoggerFactory.getLogger(ScopeReaderRepositoryInitializer.class);
-    static final String SCRIPT = "gradial-oauth-scopes.repoinit";
-
-    @Reference
-    private RepoInitParser parser;
-    @Reference
-    private JcrRepoInitOpsProcessor processor;
+    private static final String USER_PATH = "system/gradial";
+    private static final String PRIVILEGE = "rep:readNodes";
 
     private BundleContext bundleContext;
     private ServiceRegistration<ScopeReaderReady> ready;
@@ -87,15 +92,13 @@ public class ScopeReaderRepositoryInitializer implements SlingRepositoryInitiali
         }
     }
 
-    /** True when the script was applied; false when an account of another kind holds the ID. */
+    /** True when the user and ACL are in place; false when an account of another kind holds the ID. */
     boolean apply(SlingRepository repository) throws Exception {
         // The repository passed to an initializer is jcr.base's master repository, created for jcr.base's own
         // bundle (AbstractSlingRepositoryManager.java:568, create(this.bundleContext.getBundle())). Its
         // loginAdministrative checks allowLoginAdministrativeForBundle(usingBundle) for that bundle
         // (AbstractSlingRepository2.java:443-444), not for gradial.core, so no login-admin allow-list entry is
-        // needed. Sling's own RepositoryInitializerFactory makes the same call (jcr.repoinit 1.1.54,
-        // RepositoryInitializerFactory.java:126-128). loginService is impossible here: this creates the user that a
-        // service login would need.
+        // needed. loginService is impossible here: this creates the user that a service login would need.
         @SuppressWarnings("deprecation")
         Session session = repository.loginAdministrative(null);
         try {
@@ -106,9 +109,9 @@ public class ScopeReaderRepositoryInitializer implements SlingRepositoryInitiali
                         + "that account to enable the check.", DynamicScopeRegistrar.READER, existing.isGroup() ? "group" : "user");
                 return false;
             }
-            try (Reader script = script()) {
-                processor.apply(session, parser.parse(script));
-            }
+            UserManager users = ((JackrabbitSession) session).getUserManager();
+            User reader = existing != null ? (User) existing : users.createSystemUser(DynamicScopeRegistrar.READER, USER_PATH);
+            allowReadNodesOnRoot(session, reader);
             session.save();
             return true;
         } finally {
@@ -123,9 +126,23 @@ public class ScopeReaderRepositoryInitializer implements SlingRepositoryInitiali
         }
     }
 
-    static Reader script() throws IOException {
-        InputStream stream = ScopeReaderRepositoryInitializer.class.getResourceAsStream(SCRIPT);
-        if (stream == null) throw new IOException("Missing " + SCRIPT);
-        return new InputStreamReader(stream, StandardCharsets.UTF_8);
+    /** {@code allow rep:readNodes on /} for the user; writes the policy only when the entry is new. */
+    private static void allowReadNodesOnRoot(Session session, User reader) throws Exception {
+        AccessControlManager acm = session.getAccessControlManager();
+        JackrabbitAccessControlList acl = null;
+        for (AccessControlPolicy policy : acm.getPolicies("/")) {
+            if (policy instanceof JackrabbitAccessControlList) acl = (JackrabbitAccessControlList) policy;
+        }
+        if (acl == null) {
+            AccessControlPolicyIterator applicable = acm.getApplicablePolicies("/");
+            while (acl == null && applicable.hasNext()) {
+                AccessControlPolicy policy = applicable.nextAccessControlPolicy();
+                if (policy instanceof JackrabbitAccessControlList) acl = (JackrabbitAccessControlList) policy;
+            }
+        }
+        if (acl == null) throw new javax.jcr.security.AccessControlException("No editable access control list on /");
+        if (acl.addEntry(reader.getPrincipal(), new Privilege[] {acm.privilegeFromName(PRIVILEGE)}, true)) {
+            acm.setPolicy("/", acl);
+        }
     }
 }
