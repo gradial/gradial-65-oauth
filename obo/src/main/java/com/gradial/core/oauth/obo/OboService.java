@@ -225,6 +225,12 @@ public class OboService implements Runnable {
             session.save();
             OboAudit.event("grant_issued", string(grant, "userId"), grant.getName(), null);
             return tokens;
+        } catch (InvalidItemStateException e) {
+            // RFC 6749 4.1.2: the same code redeemed twice at once. The other request won; revoke what it produced.
+            session.refresh(false);
+            Node grant = grant(session, code, "goc");
+            if (matches(grant, "usedCodeHash", code)) revokeFamily(session, grant, "code_race");
+            throw invalid();
         } finally { session.logout(); }
     }
 

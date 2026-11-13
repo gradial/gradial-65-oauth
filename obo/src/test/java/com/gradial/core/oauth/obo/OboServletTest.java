@@ -351,6 +351,36 @@ class OboServletTest {
     }
 
     @Test
+    void credentialsInTheQueryStringAreRefusedBeforeClientAuthentication() throws Exception {
+        fixture = new OboFixture();
+        String verifier = OboService.random();
+        String nonce = fixture.service.consent(OboFixture.USER, OboFixture.CLIENT, OboFixture.REDIRECT,
+                OboService.challenge(verifier), OboFixture.STATE);
+        OboService.Tokens tokens = fixture.service.exchange(
+                fixture.service.authorize(nonce, OboFixture.USER, true).code, OboFixture.REDIRECT, verifier);
+        for (String query : new String[] {"refresh_token=x", "client_secret=x", "a=1&code=x", "%74oken=x", "code_verifier"}) {
+            SlingHttpServletRequest request = post("/bin/gradial/obo/token", "anonymous",
+                    Map.of("grant_type", "refresh_token", "refresh_token", tokens.refresh));
+            when(request.getHeader("Authorization")).thenReturn(basic(OboFixture.CLIENT, OboFixture.SECRET));
+            when(request.getQueryString()).thenReturn(query);
+            SlingHttpServletResponse response = response();
+            servlet(fixture.service).doPost(request, response);
+            verify(response).setStatus(400);
+            assertTrue(body.toString().contains("\"invalid_request\""), query);
+        }
+        SlingHttpServletRequest revoke = post("/bin/gradial/obo/revoke", "anonymous", Map.of("token", tokens.access));
+        when(revoke.getHeader("Authorization")).thenReturn(basic(OboFixture.CLIENT, OboFixture.SECRET));
+        when(revoke.getQueryString()).thenReturn("token=" + tokens.access);
+        SlingHttpServletResponse response = response();
+        servlet(fixture.service).doPost(revoke, response);
+        verify(response).setStatus(400);
+        // The refused requests consumed nothing: the refresh credential still works.
+        assertNotNull(fixture.service.refresh(tokens.refresh).access);
+        assertFalse(OboServlet.credentialInQuery(null));
+        assertFalse(OboServlet.credentialInQuery("debug=1&codex=2"));
+    }
+
+    @Test
     void theTokenEndpointRefreshesWithTheRightCredential() throws Exception {
         fixture = new OboFixture();
         String verifier = OboService.random();

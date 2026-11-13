@@ -350,6 +350,20 @@ class OboServiceTest {
         assertThrows(RepositoryException.class, () -> service.refresh(first.refresh));
     }
     @Test
+    void aConflictingConcurrentCodeExchangeRevokesTheFamilyInsteadOfReturningTokens() throws Exception {
+        String verifier = OboService.random();
+        String nonce = service.consent(USER, OboFixture.CLIENT, REDIRECT, OboService.challenge(verifier), OboFixture.STATE);
+        String code = service.authorize(nonce, USER, true).code;
+        fixture.conflictOnNextSave = () -> { };
+        assertThrows(RepositoryException.class, () -> service.exchange(code, REDIRECT, verifier));
+        Session session = storage.login();
+        try {
+            assertTrue(session.getNode(OboService.path(OboService.ROOT, OboFixture.idOf(code))).getProperty("revoked").getBoolean());
+        } finally { session.logout(); }
+        assertThrows(RepositoryException.class, () -> service.exchange(code, REDIRECT, verifier));
+    }
+
+    @Test
     void refreshHistoryIsBoundedAndAGrantNeverGrowsChildNodes() throws Exception {
         OboService.Tokens current = tokens();
         List<String> consumed = new ArrayList<>();

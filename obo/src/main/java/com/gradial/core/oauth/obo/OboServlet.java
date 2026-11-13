@@ -75,6 +75,7 @@ public class OboServlet extends SlingAllMethodsServlet {
                 approve(request, response);
                 return;
             }
+            if (credentialInQuery(request.getQueryString())) { error(response, 400, "invalid_request"); return; }
             if (!OboClientAuthentication.accepts(request, service)) { response.setHeader("WWW-Authenticate", "Basic realm=\"Gradial OBO\""); error(response, 401, "invalid_client"); return; }
             if (OboAuthenticationHandler.REVOKE_PATH.equals(path)) {
                 service.revoke(parameter(request, "token"));
@@ -175,6 +176,24 @@ public class OboServlet extends SlingAllMethodsServlet {
             throw OboService.invalid(OboService.Refusal.IMPERSONATION);
         }
         return user;
+    }
+
+    private static final java.util.Set<String> CREDENTIALS = new java.util.HashSet<>(java.util.Arrays.asList(
+            "code", "code_verifier", "refresh_token", "token", "client_secret"));
+
+    /**
+     * RFC 6749 3.2 and 2.3.1: token and revoke credentials belong in the POST body. A query string ends up in
+     * request.log and access.log, so a request carrying one there is refused (the log line is already written,
+     * but a client that does this never gets a working token).
+     */
+    static boolean credentialInQuery(String query) {
+        if (query == null) return false;
+        for (String pair : query.split("&")) {
+            String name = pair.split("=", 2)[0];
+            try { name = java.net.URLDecoder.decode(name, "UTF-8"); } catch (UnsupportedEncodingException | IllegalArgumentException e) { return true; }
+            if (CREDENTIALS.contains(name)) return true;
+        }
+        return false;
     }
 
     private static String parameter(SlingHttpServletRequest request, String name) {
