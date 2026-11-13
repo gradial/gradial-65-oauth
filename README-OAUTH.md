@@ -66,6 +66,10 @@ cd ui.config
 mvn clean install -PautoInstallPackage
 ```
 
+### Upgrading from 1.2.0, and rolling back
+
+Up to 1.2.0, `gradial.ui.apps` and `gradial.ui.config` used replace-mode filters on `/apps/gradial` and `/apps/gradial/osgiconfig`, so installing them deleted everything else under those paths. From this release they write only their own files. Do not roll back to 1.2.0 on an Author that keeps other content or OSGi configurations under `/apps/gradial`: uninstalling this release can make AEM install `gradial.ui.config-1.2.0` again (seen on AEM 6.5 SP25), and its filter then deletes those configurations. After upgrading, delete (do not uninstall) `gradial.all-1.2.0`, `gradial.ui.apps-1.2.0` and `gradial.ui.config-1.2.0` in Package Manager; uninstall would restore 1.2.0's snapshot.
+
 ## OAuth Configuration
 
 ### Creating a New OAuth Scope
@@ -110,7 +114,7 @@ The initializer creates the user and its ACL with the JCR and Jackrabbit APIs, w
 
 ### Scope names must be unique
 
-Granite keeps one scope per name. A scope registered later with the same name silently replaces the earlier one, and unregistering either removes the name for both. Another bundle can define scopes too (for example an older copy of this package's scope classes, or a customer's own scopes). So a DynamicScope configuration whose `scopeName` is already registered by another scope, in this bundle or any other, is not registered, and AEM logs one ERROR naming both definitions. Remove or rename one of them. Scope names are part of each Gradial connection's configuration, so renaming one means updating the connections that request it.
+Granite keeps one scope per name. A scope registered later with the same name silently replaces the earlier one, and unregistering either removes the name for both. Another bundle can define scopes too (for example an older copy of this package's scope classes, or a customer's own scopes). So a DynamicScope configuration whose `scopeName` is already registered by another scope, in this bundle or any other, is not registered, and AEM logs one ERROR naming both definitions. Remove or rename one of them. Scope names are part of each Gradial connection's configuration, so renaming one means updating the connections that request it. When the scope that held the name goes away (its bundle is updated or stopped, or the duplicate configuration is removed), the refused one registers at once and AEM logs one INFO.
 
 ### Available JCR Privileges
 
