@@ -23,8 +23,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Creates the {@value DynamicScopeRegistrar#READER} service user that checks scope paths, applying the bundled
- * with the JCR and Jackrabbit APIs. The result is what these repoinit statements would produce:
+ * Creates the {@value DynamicScopeRegistrar#READER} service user that checks scope paths, using only the JCR
+ * and Jackrabbit APIs. The result is what these repoinit statements would produce:
  * <pre>
  * create service user gradial-oauth-scope-reader with path system/gradial
  * set ACL for gradial-oauth-scope-reader

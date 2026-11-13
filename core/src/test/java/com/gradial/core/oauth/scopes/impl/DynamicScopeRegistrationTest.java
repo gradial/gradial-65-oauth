@@ -268,6 +268,47 @@ class DynamicScopeRegistrationTest {
     }
 
     @Test
+    void aRefusedNameIsRegisteredWhenTheForeignHolderGoesAway() {
+        path("/content/site");
+        Scope foreign = mock(Scope.class);
+        when(foreign.getName()).thenReturn("read_all");
+        org.osgi.framework.ServiceRegistration<Scope> held = context.bundleContext().registerService(Scope.class, foreign, null);
+        DynamicScopeRegistrar ours = registrar("read_all", "/content/site");
+        assertEquals(1, errors().size());
+        // Another scope coming and going does not repeat the refusal.
+        Scope other = mock(Scope.class);
+        when(other.getName()).thenReturn("tags_author");
+        context.bundleContext().registerService(Scope.class, other, null).unregister();
+        assertEquals(1, errors().size());
+        held.unregister();
+        assertEquals(Collections.singletonList("read_all"), registeredNames());
+        assertNotSame(foreign, registered("read_all"));
+        assertEquals(1, messages(uk.org.lidalia.slf4jext.Level.INFO).size());
+        ours.deactivate();
+        assertTrue(registeredNames().isEmpty());
+    }
+
+    @Test
+    void whenOurOwnDuplicateIsRemovedTheOtherConfigurationTakesTheName() {
+        path("/content/a");
+        path("/content/b");
+        DynamicScopeRegistrar first = registrar("site_author", "/content/a");
+        DynamicScopeRegistrar second = registrar("site_author", "/content/b");
+        first.deactivate();
+        assertEquals(Collections.singletonList("site_author"), registeredNames());
+        second.deactivate();
+        assertTrue(registeredNames().isEmpty(), "a deactivated duplicate does not register on the way out");
+    }
+
+    @Test
+    void aConfigurationWithoutNameOrPathLogsOneErrorAndRegistersNothing() {
+        registrar("", "/content/site").deactivate();
+        registrar("site_author", null).deactivate();
+        assertTrue(registeredNames().isEmpty());
+        assertEquals(2, errors().size());
+    }
+
+    @Test
     void deactivationUnregistersTheScopeAndTheListener() {
         path("/content/site");
         DynamicScopeRegistrar scope = registrar("site_author", "/content/site");

@@ -22,6 +22,8 @@ import org.apache.sling.serviceusermapping.ServiceUserMapped;
 import org.osgi.framework.Bundle;
 import org.osgi.framework.BundleContext;
 import org.osgi.framework.InvalidSyntaxException;
+import org.osgi.framework.ServiceEvent;
+import org.osgi.framework.ServiceListener;
 import org.osgi.framework.ServiceReference;
 import org.osgi.framework.ServiceRegistration;
 import org.osgi.service.component.annotations.Activate;
@@ -104,6 +106,9 @@ public class DynamicScopeRegistrar implements ResourceChangeListener, ExternalRe
     private ConfiguredScope scope;
     private ServiceRegistration<?> listener;
     private ServiceRegistration<?> registration;
+    private ServiceListener scopeListener;
+    /** The holder named in the last refusal, so a retry that is refused again by the same holder logs nothing. Guarded by REGISTRATION. */
+    private String refusedBy;
     private boolean active;
     /** Last known PRESENT or MISSING; null until a check could log in. Guarded by this. */
     private Existence known;
@@ -113,11 +118,28 @@ public class DynamicScopeRegistrar implements ResourceChangeListener, ExternalRe
     @Activate
     protected void activate(BundleContext context, DynamicOAuthScopeConfiguration config) {
         this.bundleContext = context;
+        if (blank(config.scopeName()) || blank(config.resourcePath())) {
+            LOGGER.error("OAuth scope configuration {} not registered: scopeName and resourcePath are both required "
+                    + "(scopeName={}, resourcePath={}).", DynamicScope.class.getName(), config.scopeName(), config.resourcePath());
+            return;
+        }
         this.scope = new ConfiguredScope(this, config);
         synchronized (REGISTRATION) {
             active = true;
         }
         this.config = config;
+        // A name refused because another scope held it is retried when that scope goes away (its bundle is
+        // updated or stopped, or our own duplicate configuration is removed), so the name is never left empty.
+        scopeListener = event -> {
+            if (event.getType() == ServiceEvent.UNREGISTERING || event.getType() == ServiceEvent.MODIFIED_ENDMATCH) {
+                retryWithout(event.getServiceReference());
+            }
+        };
+        try {
+            context.addServiceListener(scopeListener, "(objectClass=" + Scope.class.getName() + ")");
+        } catch (InvalidSyntaxException e) {
+            throw new IllegalStateException(e);
+        }
         Dictionary<String, Object> properties = new Hashtable<>();
         properties.put(ResourceChangeListener.PATHS, listenerPaths(config.resourcePath()));
         properties.put(ResourceChangeListener.CHANGES, new String[] {"ADDED", "REMOVED"});
@@ -174,8 +196,26 @@ public class DynamicScopeRegistrar implements ResourceChangeListener, ExternalRe
         return paths.toArray(new String[0]);
     }
 
+    private static boolean blank(String value) { return value == null || value.trim().isEmpty(); }
+
+    /** Called while another Scope service is unregistering: registers this one if it was refused for that name. */
+    void retryWithout(ServiceReference<?> leaving) {
+        synchronized (REGISTRATION) {
+            if (!active || registration != null) return;
+        }
+        reconcile(leaving);
+    }
+
     @Deactivate
     protected void deactivate() {
+        if (scopeListener != null) {
+            try {
+                bundleContext.removeServiceListener(scopeListener);
+            } catch (IllegalStateException stopping) {
+                // The bundle context is already invalid.
+            }
+            scopeListener = null;
+        }
         synchronized (REGISTRATION) {
             active = false;
             unregister();
@@ -205,22 +245,29 @@ public class DynamicScopeRegistrar implements ResourceChangeListener, ExternalRe
 
     /** Registers the scope if its name is free, and logs a change of its path's state. */
     void reconcile() {
+        reconcile(null);
+    }
+
+    /** As {@link #reconcile()}, treating {@code leaving} (a scope being unregistered) as already gone. */
+    private void reconcile(ServiceReference<?> leaving) {
         // The check and the logging happen under one per-scope lock, so a slower, older check can never be
         // reported after a newer one. REGISTRATION is always taken inside it, never the other way round.
         synchronized (this) {
             Existence existence = existence();
-            if (!register()) return;
+            if (!register(leaving)) return;
             report(existence);
         }
     }
 
     /** True when this scope is registered (now or already); false when inactive or the name is taken. */
-    private boolean register() {
+    private boolean register(ServiceReference<?> leaving) {
         synchronized (REGISTRATION) {
             if (!active) return false;
             if (registration != null) return true;
-            String holder = holderOfName();
+            String holder = holderOfName(leaving);
             if (holder != null) {
+                if (holder.equals(refusedBy)) return false;
+                refusedBy = holder;
                 LOGGER.error("OAuth scope {} not registered: the name is already registered by {}. Granite keeps one "
                         + "scope per name, so registering it would silently replace that scope. Remove one of the two "
                         + "definitions (this one is a {} configuration in {}).", config.scopeName(), holder,
@@ -230,6 +277,10 @@ public class DynamicScopeRegistrar implements ResourceChangeListener, ExternalRe
             Dictionary<String, Object> properties = new Hashtable<>();
             properties.put(SCOPE_NAME_PROPERTY, config.scopeName());
             registration = bundleContext.registerService(Scope.class.getName(), scope, properties);
+            if (refusedBy != null) {
+                LOGGER.info("OAuth scope {} registered: {} no longer holds the name.", config.scopeName(), refusedBy);
+                refusedBy = null;
+            }
             return true;
         }
     }
@@ -308,7 +359,7 @@ public class DynamicScopeRegistrar implements ResourceChangeListener, ExternalRe
     }
 
     /** Another scope service that already holds this scope's name, described for the log; null if none. */
-    private String holderOfName() {
+    private String holderOfName(ServiceReference<?> leaving) {
         Collection<ServiceReference<Scope>> references;
         try {
             references = bundleContext.getServiceReferences(Scope.class, null);
@@ -316,6 +367,7 @@ public class DynamicScopeRegistrar implements ResourceChangeListener, ExternalRe
             throw new IllegalStateException(e);
         }
         for (ServiceReference<Scope> reference : references) {
+            if (reference.equals(leaving)) continue;
             Scope other = bundleContext.getService(reference);
             if (other == null) continue;
             try {

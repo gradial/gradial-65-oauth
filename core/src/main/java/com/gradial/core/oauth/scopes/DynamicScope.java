@@ -16,8 +16,8 @@ import com.gradial.core.oauth.config.DynamicOAuthScopeConfiguration;
  * An OAuth scope defined by a {@code com.gradial.core.oauth.scopes.DynamicScope} factory configuration.
  *
  * <p>Instances are created and registered with Granite by
- * {@link com.gradial.core.oauth.scopes.impl.DynamicScopeRegistrar}, which registers a scope only while
- * its resource path exists and its name is not held by another scope.
+ * {@link com.gradial.core.oauth.scopes.impl.DynamicScopeRegistrar}, which registers a scope whenever its name
+ * is not held by another scope, and logs an ERROR while its resource path is missing.
  */
 public class DynamicScope implements ScopeWithPrivileges {
 
