@@ -6,55 +6,32 @@ import java.util.Objects;
 import javax.servlet.http.HttpServletRequest;
 
 import org.apache.jackrabbit.api.security.user.User;
-import org.osgi.service.cm.ConfigurationAdmin;
-import org.osgi.service.component.annotations.Activate;
-import org.osgi.service.component.annotations.Component;
-import org.osgi.service.component.annotations.ConfigurationPolicy;
-import org.osgi.service.component.annotations.Reference;
-import org.osgi.service.metatype.annotations.Designate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.adobe.granite.oauth.server.Scope;
 import com.adobe.granite.oauth.server.ScopeWithPrivileges;
 import com.gradial.core.oauth.config.DynamicOAuthScopeConfiguration;
 
 /**
- * Dynamic implementation of OAuth Scope that can be configured via OSGi configuration.
- * This allows for the creation of multiple scopes with different permissions through configuration.
+ * An OAuth scope defined by a {@code com.gradial.core.oauth.scopes.DynamicScope} factory configuration.
+ *
+ * <p>Instances are created and registered with Granite by
+ * {@link com.gradial.core.oauth.scopes.impl.DynamicScopeRegistrar}, which registers a scope whenever its name
+ * is not held by another scope, and logs an ERROR while its resource path is missing.
  */
-@Component(
-        service = Scope.class,
-        configurationPid = "com.gradial.core.oauth.scopes.DynamicScope",
-        configurationPolicy = ConfigurationPolicy.REQUIRE
-)
-@Designate(ocd = DynamicOAuthScopeConfiguration.class, factory = true)
 public class DynamicScope implements ScopeWithPrivileges {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(DynamicScope.class);
     private static final String DEFAULT_ENDPOINT = "/oauth/token";
     private static final String DESCRIPTION_PREFIX = "Dynamic OAuth Configuration for ";
 
-    @Reference
-    private ConfigurationAdmin configurationAdmin;
-
     private DynamicOAuthScopeConfiguration config;
 
     /**
-     * Activates this component with the provided configuration.
-     *
-     * <p>Deliberately not also bound to {@code @Modified}: Adobe's
-     * {@code OAuth2ResourceServerImpl} keys its allowed-scope map by
-     * {@link Scope#getName()} captured at bind time in {@code bindScope}/{@code unbindScope}.
-     * A config edit handled via {@code modified} changes {@code getName()}'s return value
-     * in place without re-registering the service, so the resource server keeps the stale
-     * name bound and rejects tokens for the new one. Omitting {@code @Modified} makes SCR
-     * deactivate and reactivate the component on every config change, forcing an
-     * unbind/bind cycle with the correct name.
+     * Binds this scope to its configuration.
      *
      * @param config The OSGi configuration for this scope
      */
-    @Activate
     protected void activate(DynamicOAuthScopeConfiguration config) {
         this.config = config;
         LOGGER.info("Activated dynamic OAuth scope: {}", config.scopeName());

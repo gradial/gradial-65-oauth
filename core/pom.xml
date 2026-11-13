@@ -25,6 +25,25 @@
     <artifactId>gradial.core</artifactId>
     <name>Gradial - Core</name>
     <description>Core bundle for Gradial OAuth</description>
+    <properties>
+        <test.oak.version>1.22.24</test.oak.version>
+        <test.repoinit.version>1.1.38</test.repoinit.version>
+        <test.repoinit.parser.version>1.6.14</test.repoinit.parser.version>
+        <test.guava.version>15.0</test.guava.version>
+    </properties>
+    <profiles>
+        <profile>
+            <!-- Oak 1.22 needs java.security.acl (removed in Java 14); newer JDKs use the AEM 6.5 LTS stack. -->
+            <id>aem-lts-test-stack</id>
+            <activation><jdk>[14,)</jdk></activation>
+            <properties>
+                <test.oak.version>1.88.0</test.oak.version>
+                <test.repoinit.version>1.1.54</test.repoinit.version>
+                <test.repoinit.parser.version>1.9.2</test.repoinit.parser.version>
+                <test.guava.version>33.4.8-jre</test.guava.version>
+            </properties>
+        </profile>
+    </profiles>
     <build>
         <plugins>
             <plugin>
@@ -42,7 +61,8 @@
                         </goals>
                         <configuration>
                             <bnd><![CDATA[
-Import-Package: javax.annotation;version=0.0.0,*
+Import-Package: javax.annotation;version=0.0.0,\
+  *
                                 ]]></bnd>
                         </configuration>
                     </execution>
@@ -80,6 +100,18 @@ Import-Package: javax.annotation;version=0.0.0,*
     </build>
 
     <dependencies>
+        <dependency>
+            <groupId>org.apache.felix</groupId>
+            <artifactId>org.apache.felix.framework</artifactId>
+            <version>7.0.5</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- Real Oak plus Sling repoinit at AEM 6.5 SP25's versions (LTS on JDK 14+), first on the test classpath, only to
+             run the equivalence test against Sling's real repoinit. Nothing in main code uses them. -->
+        <dependency><groupId>com.google.guava</groupId><artifactId>guava</artifactId><version>${test.guava.version}</version><scope>test</scope></dependency>
+        <dependency><groupId>org.apache.jackrabbit</groupId><artifactId>oak-jcr</artifactId><version>${test.oak.version}</version><scope>test</scope></dependency>
+        <dependency><groupId>org.apache.sling</groupId><artifactId>org.apache.sling.jcr.repoinit</artifactId><version>${test.repoinit.version}</version><scope>test</scope></dependency>
+        <dependency><groupId>org.apache.sling</groupId><artifactId>org.apache.sling.repoinit.parser</artifactId><version>${test.repoinit.parser.version}</version><scope>test</scope></dependency>
         <dependency>
             <groupId>uk.org.lidalia</groupId>
             <artifactId>slf4j-test</artifactId>

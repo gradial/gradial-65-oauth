@@ -1,4 +1,31 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!--
+  One exact root per shipped file, in update mode. FileVault (WorkspaceFilter / Importer) then writes exactly
+  these files and removes nothing else: other files in the same osgiconfig folders, whether a customer's or
+  another package's, survive install, reinstall, upgrade and uninstall. Uninstall restores the snapshot that
+  FileVault took of these exact paths at first install.
+
+  Releases up to 1.2.0 used <filter root="/apps/gradial/osgiconfig"/> (default mode replace), which deleted
+  every configuration under that folder that the package did not contain.
+
+  One entry is in replace mode on purpose: RepositoryInitializer~gradial-oauth-scopes.cfg.json. Pre-release
+  1.2.2 snapshots shipped that file (a repoinit script creating gradial-oauth-scope-reader). This package no
+  longer contains it, and a replace root with no content makes FileVault delete exactly that one file on
+  upgrade, so the old script cannot run beside ScopeReaderRepositoryInitializer. 1.2.0 never shipped it.
+-->
 <workspaceFilter version="1.0">
-    <filter root="/apps/gradial/osgiconfig"/>
+    <filter root="/apps/gradial/osgiconfig/config.author/com.gradial.core.oauth.scopes.DynamicScope~launch-author.cfg.json" mode="update"/>
+    <filter root="/apps/gradial/osgiconfig/config.author/com.gradial.core.oauth.scopes.DynamicScope~publish-assets.cfg.json" mode="update"/>
+    <filter root="/apps/gradial/osgiconfig/config.author/com.gradial.core.oauth.scopes.DynamicScope~read-all.cfg.json" mode="update"/>
+    <filter root="/apps/gradial/osgiconfig/config.author/com.gradial.core.oauth.scopes.DynamicScope~site-author.cfg.json" mode="update"/>
+    <filter root="/apps/gradial/osgiconfig/config.author/com.gradial.core.oauth.scopes.DynamicScope~site-xf-author.cfg.json" mode="update"/>
+    <filter root="/apps/gradial/osgiconfig/config.author/com.gradial.core.oauth.scopes.DynamicScope~tags-author.cfg.json" mode="update"/>
+    <filter root="/apps/gradial/osgiconfig/config.author/com.gradial.core.oauth.scopes.DynamicScope~upload-assets.cfg.json" mode="update"/>
+    <filter root="/apps/gradial/osgiconfig/config.author/com.gradial.core.oauth.scopes.impl.ScopeReaderRepositoryInitializer.cfg.json" mode="update"/>
+    <!-- Removed file of this package (see above): replace mode with no content deletes exactly this one file. -->
+    <filter root="/apps/gradial/osgiconfig/config.author/org.apache.sling.jcr.repoinit.RepositoryInitializer~gradial-oauth-scopes.cfg.json" mode="replace"/>
+    <filter root="/apps/gradial/osgiconfig/config.author/org.apache.sling.serviceusermapping.impl.ServiceUserMapperImpl.amended~gradial-oauth-scopes.cfg.json" mode="update"/>
+    <filter root="/apps/gradial/osgiconfig/config.prod/org.apache.sling.commons.log.LogManager.factory.config~gradial.cfg.json" mode="update"/>
+    <filter root="/apps/gradial/osgiconfig/config.stage/org.apache.sling.commons.log.LogManager.factory.config~gradial.cfg.json" mode="update"/>
+    <filter root="/apps/gradial/osgiconfig/config/org.apache.sling.commons.log.LogManager.factory.config~gradial.cfg.json" mode="update"/>
 </workspaceFilter>

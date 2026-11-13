@@ -66,6 +66,10 @@ cd ui.config
 mvn clean install -PautoInstallPackage
 ```
 
+### Upgrading from 1.2.0, and rolling back
+
+Up to 1.2.0, `gradial.ui.apps` and `gradial.ui.config` used replace-mode filters on `/apps/gradial` and `/apps/gradial/osgiconfig`, so installing them deleted everything else under those paths. From this release they write only their own files. Do not roll back to 1.2.0 on an Author that keeps other content or OSGi configurations under `/apps/gradial`: uninstalling this release can make AEM install `gradial.ui.config-1.2.0` again (seen on AEM 6.5 SP25), and its filter then deletes those configurations. After upgrading, delete (do not uninstall) `gradial.all-1.2.0`, `gradial.ui.apps-1.2.0` and `gradial.ui.config-1.2.0` in Package Manager; uninstall would restore 1.2.0's snapshot.
+
 ## OAuth Configuration
 
 ### Creating a New OAuth Scope
@@ -87,6 +91,30 @@ mvn clean install -PautoInstallPackage
 cd ui.config
 mvn clean install -PautoInstallPackage
 ```
+
+### Every resourcePath must exist
+
+Each scope's `resourcePath` must exist on every environment where the configuration is deployed. Granite OAuth 1.1.34 handles a missing path badly, and this package does not change that:
+
+- **Authorization-code flow:** consent fails. `OAuth2AuthorizationCodeIssuer.doPost` throws `OAuthSystemException: failed while accessing repository` and the consent POST returns 500, also when valid scopes are requested in the same request.
+- **JWT bearer grant (what Gradial uses):** the token is issued, but it gets no access anywhere. Every content read returns 404, including reads under the other scopes in the same token.
+
+This package therefore **detects and logs** a missing path; it never refuses the scope. A scope always registers when its name is free, and AEM logs one ERROR naming the scope and the path:
+
+- at activation;
+- when the path, or an ancestor, is added or removed (a Sling resource change listener; no polling, no restart). The ERROR repeats only after the path came back, which logs one INFO;
+- when the reader user becomes available after the scopes activated (a fresh install), without a restart;
+- when Granite reads the scope's path to issue a token, at most once every 15 minutes per scope.
+
+Gradial's own health check shows the user-facing message.
+
+The check runs as the service user `gradial-oauth-scope-reader`, created on Author by this package's repository initializer, with only `rep:readNodes` on `/`: it can see that nodes exist but cannot read properties. Oak evaluates permission entries for user principals before those for group principals, so this user's own allow on `/` wins over a `deny jcr:read` for `everyone` on a scope's path: such a deny does not cause a false report. An existing path is hidden from the reader only by a deny entry for `gradial-oauth-scope-reader` itself, or by a closed user group on the path or an ancestor where CUG evaluation is enabled (it is off on Author by default).
+
+The initializer creates the user and its ACL with the JCR and Jackrabbit APIs, with the same result as these repoinit statements (`create service user gradial-oauth-scope-reader with path system/gradial`, then `set ACL for gradial-oauth-scope-reader` / `allow rep:readNodes on /` / `end`). It does not use Sling's repoinit services because AEM 6.5's API controller refuses to wire customer bundles to `org.apache.sling.repoinit.parser`. It also never uses a repoinit configuration: if a normal user or a group named `gradial-oauth-scope-reader` already exists, it leaves that account untouched, sets nothing up and logs one ERROR, and it never fails, so AEM always starts. Scopes then register with one WARN each that their paths are unchecked, which is also what happens on a deployment that copies the scope class without this package's configurations.
+
+### Scope names must be unique
+
+Granite keeps one scope per name. A scope registered later with the same name silently replaces the earlier one, and unregistering either removes the name for both. Another bundle can define scopes too (for example an older copy of this package's scope classes, or a customer's own scopes). So a DynamicScope configuration whose `scopeName` is already registered by another scope, in this bundle or any other, is not registered, and AEM logs one ERROR naming both definitions. Remove or rename one of them. Scope names are part of each Gradial connection's configuration, so renaming one means updating the connections that request it. When the scope that held the name goes away (its bundle is updated or stopped, or the duplicate configuration is removed), the refused one registers at once and AEM logs one INFO.
 
 ### Available JCR Privileges
 
@@ -175,6 +203,8 @@ If the DynamicScope component shows as "no config" in OSGi:
 - **400 Bad Request**: Check grant_type and required parameters
 - **401 Unauthorized**: Verify client credentials
 - **403 Forbidden**: Scope may not have access to requested resource
+- **400 `invalid_scope`**: A requested scope is not registered. Check `error.log` for `OAuth scope <name> not registered`: another scope already uses the name.
+- **Consent fails with 500, or the token is issued but every read returns 404**: one requested scope's `resourcePath` is missing. Check `error.log` for `OAuth scope <name> is registered, but its resource path ... is missing or not visible`.
 
 ## License
 

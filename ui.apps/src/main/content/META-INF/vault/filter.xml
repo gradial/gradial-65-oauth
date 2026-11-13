@@ -1,4 +1,20 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!--
+  This package ships no content. Releases up to 1.2.0 declared <filter root="/apps/gradial"/>. With no mode,
+  FileVault uses replace, and on import it removes every node under a replace root that the package does not
+  contain. The package contained nothing there, so each install deleted all of /apps/gradial: other
+  applications' code and every OSGi configuration under /apps/gradial/osgiconfig.
+
+  FileVault requires at least one filter, so this one covers /apps/gradial-ui-apps-noop, which nothing creates,
+  in merge mode (existing nodes are never touched). Install, reinstall and uninstall leave the repository
+  unchanged. The package keeps its name, so an upgrade replaces 1.2.0's package in place.
+
+  Upgrade note: gradial.all's own filter (<filter root="/apps/gradial-packages"/>, replace) removes 1.2.0's
+  artifacts from /apps/gradial-packages/application/install, so the Sling installer cannot pick
+  gradial.ui.apps-1.2.0.zip up again. The 1.2.0 package itself stays registered under
+  /etc/packages/io.github.gradial; installing it again (Package Manager, or restoring /apps/gradial-packages
+  from an older backup while 1.2.0 is not marked installed) re-runs the wipe.
+-->
 <workspaceFilter version="1.0">
-    <filter root="/apps/gradial"/>
+    <filter root="/apps/gradial-ui-apps-noop" mode="merge"/>
 </workspaceFilter>

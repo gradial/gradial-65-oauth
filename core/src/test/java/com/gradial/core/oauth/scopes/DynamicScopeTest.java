@@ -9,9 +9,10 @@ import org.junit.jupiter.api.Test;
 import org.osgi.service.component.annotations.Modified;
 
 import com.gradial.core.oauth.config.DynamicOAuthScopeConfiguration;
+import com.gradial.core.oauth.scopes.impl.DynamicScopeRegistrar;
 
 /**
- * Guards against re-introducing {@code @Modified} on {@link DynamicScope}.
+ * Guards against re-introducing {@code @Modified} on {@link DynamicScopeRegistrar}, the component behind each DynamicScope configuration.
  *
  * <p>Adobe's OAuth2ResourceServerImpl keys its allowed-scope map by
  * {@link com.adobe.granite.oauth.server.Scope#getName()} at bind time. If a config change
@@ -23,7 +24,7 @@ class DynamicScopeTest {
 
     @Test
     void activateIsNotAlsoBoundToModified() throws NoSuchMethodException {
-        Method activate = DynamicScope.class.getDeclaredMethod("activate", DynamicOAuthScopeConfiguration.class);
+        Method activate = DynamicScopeRegistrar.class.getDeclaredMethod("activate", org.osgi.framework.BundleContext.class, DynamicOAuthScopeConfiguration.class);
 
         assertFalse(activate.isAnnotationPresent(Modified.class),
                 "activate() must not be @Modified: a config change has to re-register the service "
@@ -33,7 +34,7 @@ class DynamicScopeTest {
 
     @Test
     void noMethodOnDynamicScopeIsAnnotatedModified() {
-        boolean anyModified = Arrays.stream(DynamicScope.class.getDeclaredMethods())
+        boolean anyModified = Arrays.stream(DynamicScopeRegistrar.class.getDeclaredMethods())
                 .anyMatch(method -> method.isAnnotationPresent(Modified.class));
 
         assertFalse(anyModified,
