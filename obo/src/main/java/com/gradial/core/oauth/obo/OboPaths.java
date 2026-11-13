@@ -28,8 +28,12 @@ final class OboPaths {
      * <li>{@code /bin/gradial/obo}: this bundle's own authorize, token and revoke endpoints
      * ({@link OboServlet}, {@code OboAuthenticationHandler.TOKEN_PATH}/{@code REVOKE_PATH}). A delegated token must
      * never mint, refresh, consent to or revoke delegation.</li>
-     * <li>{@code /oauth}: Granite OAuth server endpoints ({@code com.adobe.granite.oauth.server}, for example
-     * {@code /oauth/token} served by {@code OAuth2TokenEndpointServlet}). They mint AEM OAuth tokens.</li>
+     * <li>{@code /oauth}: Granite OAuth server paths that Sling serves. Its token endpoint itself,
+     * {@code OAuth2TokenEndpointServlet} (Granite OAuth 1.1.34), is an OSGi HTTP Whiteboard servlet
+     * ({@code osgi.http.whiteboard.servlet.pattern=/token/*} in context {@code com.adobe.granite.oauth}), outside
+     * Sling: neither this handler nor a Sling session ever applies there, and it authenticates the OAuth client
+     * from the request itself (code, JWT assertion or refresh token), so a delegated credential cannot mint
+     * tokens there either way. Verified live: with this header it answers its own {@code invalid_request}.</li>
      * <li>{@code /libs/granite/oauth}: Granite OAuth consent and client management ({@code /libs/granite/oauth/authorize},
      * served by {@code OAuth2AuthorizationCodeIssuer}; {@code /libs/granite/oauth/content/clients.html} and
      * {@code newclient.html}). They issue codes and create OAuth clients with secrets.</li>

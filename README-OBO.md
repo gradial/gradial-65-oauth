@@ -116,7 +116,7 @@ What remains is a fixed, non-configurable list of credential and administration 
 | Prefix | Why |
 |---|---|
 | `/bin/gradial/obo` | This extension's own authorize, token and revoke endpoints. A delegated token must never mint, refresh, consent to or revoke delegation. |
-| `/oauth` | Granite OAuth server endpoints (for example `/oauth/token`). They mint AEM OAuth tokens that would outlive disconnecting Gradial. |
+| `/oauth` | Granite OAuth server paths that Sling serves. The token endpoint `/oauth/token` itself is an OSGi HTTP Whiteboard servlet outside Sling (`OAuth2TokenEndpointServlet`, context `com.adobe.granite.oauth`), so the delegated session never reaches it: it authenticates the OAuth client from the request and ignores this header. |
 | `/libs/granite/oauth` | Granite OAuth consent and client management (`/libs/granite/oauth/authorize`, `content/clients.html`, `newclient.html`). |
 | `/crx/packmgr` | Package Manager. A package can write code, OSGi configuration and ACLs, and repoinit configurations it carries run as the repository administrator. |
 | `/crx/de` | CRXDE Lite, a generic repository editor. |
