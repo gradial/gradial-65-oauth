@@ -31,10 +31,17 @@ final class OboFixture {
     final OboService service = new OboService();
     /** Runs once inside the next save and then fails it, as Oak does when a concurrent writer wins. */
     volatile Runnable conflictOnNextSave;
+    /** Oak mode only: runs once inside the next save, before it is applied, as a concurrent writer's whole request. */
+    volatile Runnable beforeNextSave;
+    private final boolean oak;
 
-    OboFixture() throws Exception {
-        storage = MockJcr.newRepository();
-        Session session = storage.login();
+    OboFixture() throws Exception { this(false); }
+
+    /** With {@code oak}, storage is a real Oak repository: sessions keep their own snapshot and saves conflict for real. */
+    OboFixture(boolean oak) throws Exception {
+        this.oak = oak;
+        storage = oak ? new org.apache.jackrabbit.oak.jcr.Jcr().with(AemOak.security()).createRepository() : MockJcr.newRepository();
+        Session session = open();
         Node root = session.getRootNode();
         for (String path : new String[] {OboService.ROOT, OboService.CONSENTS}) {
             Node node = root;
@@ -42,20 +49,32 @@ final class OboFixture {
                 node = node.hasNode(segment) ? node.getNode(segment) : node.addNode(segment, "nt:unstructured");
             }
         }
-        root.addNode("home", "nt:unstructured").addNode("users", "nt:unstructured")
-                .addNode(USER, "nt:unstructured").setProperty("jcr:created", Calendar.getInstance());
+        String userPath;
+        if (oak) {
+            // A real account: Oak owns /home/users and stamps jcr:created itself.
+            userPath = ((JackrabbitSession) session).getUserManager().createUser(USER, "ordinary-author-password").getPath();
+        } else {
+            root.addNode("home", "nt:unstructured").addNode("users", "nt:unstructured")
+                    .addNode(USER, "nt:unstructured").setProperty("jcr:created", Calendar.getInstance());
+            userPath = "/home/users/" + USER;
+        }
         session.save();
         session.logout();
-        when(user.getPath()).thenReturn("/home/users/" + USER);
+        when(user.getPath()).thenReturn(userPath);
         when(users.getAuthorizable(USER)).thenReturn(user);
         SlingRepository repository = mock(SlingRepository.class);
         when(repository.loginService("obo", null)).thenAnswer(invocation -> {
-            Session real = storage.login();
+            Session real = open();
             JackrabbitSession delegated = mock(JackrabbitSession.class, AdditionalAnswers.delegatesTo(real));
             doReturn(users).when(delegated).getUserManager();
-            // The in-memory repository applies changes immediately, so discarding is a no-op.
-            doNothing().when(delegated).refresh(anyBoolean());
+            // The in-memory repository applies changes immediately, so discarding is a no-op. Oak really discards.
+            if (!oak) doNothing().when(delegated).refresh(anyBoolean());
             doAnswer(save -> {
+                Runnable before = beforeNextSave;
+                if (before != null) {
+                    beforeNextSave = null;
+                    before.run();
+                }
                 Runnable conflict = conflictOnNextSave;
                 if (conflict != null) {
                     conflictOnNextSave = null;
@@ -80,11 +99,16 @@ final class OboFixture {
         service.activate(config, java.util.Collections.emptyMap());
     }
 
+    /** A new session on the storage repository (an administrator on Oak, which has no anonymous write access). */
+    Session open() throws Exception {
+        return oak ? storage.login(new javax.jcr.SimpleCredentials("admin", "admin".toCharArray())) : storage.login();
+    }
+
     static String idOf(String token) { return token.substring(4, token.indexOf('.')); }
 
     /** The login module's per-request validation, over the fixture repository. */
     String authenticate(String access) throws Exception {
-        Session session = storage.login();
+        Session session = open();
         try { return service.validateAccess(OboService.records(session), users, access); } finally { session.logout(); }
     }
 

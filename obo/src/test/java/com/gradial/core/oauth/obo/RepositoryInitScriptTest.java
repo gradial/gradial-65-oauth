@@ -129,11 +129,15 @@ class RepositoryInitScriptTest {
         users.createUser("zz-admin", "zz-admin-password");
         ((Group) users.getAuthorizable("administrators")).addMember(users.getAuthorizable("zz-admin"));
         admin.save();
+        everyoneMayReadVar();
         setUp();
         storeAcceptsRecords();
 
         Session author = repository.login(new SimpleCredentials("zz-author", "zz-author-password".toCharArray()));
-        try { assertFalse(author.nodeExists(OboService.STORE)); } finally { author.logout(); }
+        try {
+            assertFalse(author.nodeExists(OboService.STORE));
+            assertFalse(author.nodeExists(OboService.ROOT + "/ab/0123456789abcdef/record"));
+        } finally { author.logout(); }
 
         Session administrator = repository.login(new SimpleCredentials("zz-admin", "zz-admin-password".toCharArray()));
         try {
@@ -150,16 +154,64 @@ class RepositoryInitScriptTest {
         } finally { service.logout(); }
     }
 
+    /** The baseline for the denial above: the same ordinary user reads the same records once the deny entry is gone. */
+    @Test
+    void theDenyEntryIsTheOnlyThingKeepingOrdinaryUsersOutOfTheStore() throws Exception {
+        ((JackrabbitSession) admin).getUserManager().createUser("zz-author", "zz-author-password");
+        admin.save();
+        everyoneMayReadVar();
+        setUp();
+        storeAcceptsRecords();
+        String record = OboService.ROOT + "/ab/0123456789abcdef/record";
+        assertFalse(canRead("zz-author", "zz-author-password", record), "denied while the deny entry is in place");
+
+        javax.jcr.security.AccessControlManager acm = admin.getAccessControlManager();
+        int removed = 0;
+        for (javax.jcr.security.AccessControlPolicy policy : acm.getPolicies(OboService.STORE)) {
+            if (!(policy instanceof org.apache.jackrabbit.api.security.JackrabbitAccessControlList)) continue;
+            org.apache.jackrabbit.api.security.JackrabbitAccessControlList acl = (org.apache.jackrabbit.api.security.JackrabbitAccessControlList) policy;
+            for (javax.jcr.security.AccessControlEntry entry : acl.getAccessControlEntries()) {
+                if (entry.getPrincipal().equals(org.apache.jackrabbit.oak.spi.security.principal.EveryonePrincipal.getInstance())
+                        && !((org.apache.jackrabbit.api.security.JackrabbitAccessControlEntry) entry).isAllow()) {
+                    acl.removeAccessControlEntry(entry);
+                    removed++;
+                }
+            }
+            acm.setPolicy(OboService.STORE, acl);
+        }
+        admin.save();
+        assertEquals(1, removed, "exactly one everyone deny entry guards the store");
+        assertTrue(canRead("zz-author", "zz-author-password", record), "readable without the deny entry, so the denial is real");
+    }
+
+    /** AEM lets everyone read /var; an empty Oak repository does not, so without this a denial proves nothing. */
+    private void everyoneMayReadVar() throws Exception {
+        javax.jcr.security.AccessControlManager acm = admin.getAccessControlManager();
+        org.apache.jackrabbit.api.security.JackrabbitAccessControlList acl =
+                org.apache.jackrabbit.commons.jackrabbit.authorization.AccessControlUtils.getAccessControlList(admin, "/var");
+        acl.addEntry(org.apache.jackrabbit.oak.spi.security.principal.EveryonePrincipal.getInstance(),
+                new javax.jcr.security.Privilege[] {acm.privilegeFromName(javax.jcr.security.Privilege.JCR_READ)}, true);
+        acm.setPolicy("/var", acl);
+        admin.save();
+    }
+
+    private boolean canRead(String id, String password, String path) throws Exception {
+        Session session = repository.login(new SimpleCredentials(id, password.toCharArray()));
+        try { return session.nodeExists(path); } finally { session.logout(); }
+    }
+
     @Test
     void theServiceUserSeesAdministratorsMembershipHeldInOverflowMemberLists() throws Exception {
         UserManager users = ((JackrabbitSession) admin).getUserManager();
         Group administrators = (Group) users.getAuthorizable("administrators");
         // Oak moves members past the first 100 into rep:membersList child nodes.
-        for (int i = 0; i < 150; i++) administrators.addMember(users.createUser("zz-member-" + i, null));
+        for (int i = 0; i < 150; i++) administrators.addMember(users.createUser("zz-member-" + i, "password-" + i));
         admin.save();
         assertTrue(admin.nodeExists(administrators.getPath() + "/rep:membersList"), "fixture must use the overflow list");
         setUp();
 
+        String passwordHash = admin.getNode(users.getAuthorizable("zz-member-149").getPath()).getProperty("rep:password").getString();
+        assertFalse(passwordHash.isEmpty(), "baseline: the account has a password hash that an administrator reads");
         Session service = admin.impersonate(new SimpleCredentials("gradial-obo-state", new char[0]));
         try {
             User overflow = (User) ((JackrabbitSession) service).getUserManager().getAuthorizable("zz-member-149");
@@ -168,6 +220,7 @@ class RepositoryInitScriptTest {
                 member |= "administrators".equals(groups.next().getID());
             }
             assertTrue(member, "the consent-time administrator check must see overflow members");
+            assertTrue(service.propertyExists(overflow.getPath() + "/rep:principalName"), "the same account's other properties are readable");
             assertFalse(service.propertyExists(overflow.getPath() + "/rep:password"), "password hashes stay unreadable");
         } finally { service.logout(); }
     }
