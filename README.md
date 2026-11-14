@@ -2,6 +2,8 @@
 
 This guide explains how to embed the Gradial OAuth package in your existing AEM 6.5 project for deployment via AMS Cloud Manager.
 
+For the opt-in extension that authenticates as each ordinary AEM user, see [User-scoped delegation](README-OBO.md).
+
 ## Prerequisites
 
 - AEM 6.5 project using Maven
