@@ -1,0 +1,280 @@
+package com.gradial.core.oauth.obo;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import java.io.StringReader;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.util.Iterator;
+
+import javax.jcr.Node;
+import javax.jcr.Repository;
+import javax.jcr.Session;
+import javax.jcr.SimpleCredentials;
+
+import org.apache.jackrabbit.api.JackrabbitSession;
+import org.apache.jackrabbit.api.security.user.Group;
+import org.apache.jackrabbit.api.security.user.User;
+import org.apache.jackrabbit.api.security.user.UserManager;
+import org.apache.jackrabbit.commons.cnd.CndImporter;
+import org.apache.jackrabbit.oak.jcr.Jcr;
+import org.apache.sling.jcr.repoinit.impl.JcrRepoInitOpsProcessorImpl;
+import org.apache.sling.repoinit.parser.impl.RepoInitParserService;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+import org.junit.jupiter.api.Test;
+
+/**
+ * Runs the Java initializer on real Oak (the AEM 6.5 SP25 or 6.5 LTS stack, by JDK). It must apply cleanly to
+ * every state a customer repository can already be in, and to itself. The repoinit script it mirrors is only the
+ * reference for {@link RepositoryInitEquivalenceTest}.
+ */
+class RepositoryInitScriptTest {
+    private static final String SLING_TYPES = "<sling='http://sling.apache.org/jcr/sling/1.0'>\n"
+            + "[sling:Folder] > nt:folder\n - * (undefined) multiple\n - * (undefined)\n + * (nt:base) = sling:Folder version\n"
+            + "[sling:OrderedFolder] > sling:Folder orderable\n + * (nt:base) = sling:OrderedFolder version\n";
+
+    private Repository repository;
+    private Session admin;
+
+    @BeforeEach
+    void repository() throws Exception {
+        repository = new Jcr().with(AemOak.security()).createRepository();
+        admin = repository.login(new SimpleCredentials("admin", "admin".toCharArray()));
+        CndImporter.registerNodeTypes(new StringReader(SLING_TYPES), admin);
+        admin.getRootNode().addNode("var", "sling:Folder");
+        // AEM always has /home/users and /home/groups; an empty Oak repository has them once an authorizable exists.
+        ((JackrabbitSession) admin).getUserManager().createGroup("administrators");
+        ((JackrabbitSession) admin).getUserManager().createUser("zz-seed", null);
+        admin.save();
+    }
+
+    @AfterEach
+    void close() { admin.logout(); }
+
+    static String shippedScript() throws Exception {
+        StringBuilder text = new StringBuilder();
+        try (java.io.Reader reader = new java.io.InputStreamReader(
+                RepositoryInitScriptTest.class.getResourceAsStream("gradial-obo.repoinit"), StandardCharsets.UTF_8)) {
+            char[] buffer = new char[4096];
+            for (int n; (n = reader.read(buffer)) > 0;) text.append(buffer, 0, n);
+        }
+        return text.toString();
+    }
+
+    /** The reference: the repoinit script run by real Sling repoinit. */
+    private void apply(String script) throws Exception {
+        new JcrRepoInitOpsProcessorImpl().apply(admin, new RepoInitParserService().parse(new StringReader(script)));
+        admin.save();
+    }
+
+    /** The shipped setup: the Java initializer. */
+    private void setUp() throws Exception {
+        assertTrue(initializer().apply(sling()));
+        admin.refresh(false);
+    }
+
+    private void storeAcceptsRecords() throws Exception {
+        for (String parent : new String[] {OboService.ROOT, OboService.CONSENTS}) {
+            Node bucket = admin.getNode(parent).addNode("ab", OboService.CONTAINER);
+            bucket.addNode("0123456789abcdef", OboService.CONTAINER).addNode("record", OboService.CONTAINER);
+        }
+        admin.save();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"", "nt:folder", "sling:Folder", "sling:OrderedFolder", "nt:unstructured", "oak:Unstructured"})
+    void appliesTwiceOverAnyExistingVarGradial(String existingType) throws Exception {
+        if (!existingType.isEmpty()) {
+            admin.getNode("/var").addNode("gradial", existingType).addNode("zz-customer", "nt:folder");
+            admin.save();
+        }
+        setUp();
+        setUp();
+        storeAcceptsRecords();
+        assertTrue(((JackrabbitSession) admin).getUserManager().getAuthorizable("gradial-obo-state") instanceof User);
+        if (!existingType.isEmpty()) {
+            assertEquals(existingType, admin.getNode("/var/gradial").getPrimaryNodeType().getName(), "existing node type is untouched");
+            assertTrue(admin.nodeExists("/var/gradial/zz-customer"), "existing content is untouched");
+        }
+    }
+
+    @Test
+    void appliesOverThePreReleaseStoreLayout() throws Exception {
+        Node obo = admin.getNode("/var").addNode("gradial", "nt:unstructured").addNode("obo", "nt:unstructured");
+        obo.addNode("grants", "nt:unstructured").addNode("ab", "oak:Unstructured");
+        admin.save();
+        setUp();
+        assertTrue(admin.nodeExists("/var/gradial/obo/grants/ab"), "pre-release records are left for cleanup");
+        assertTrue(admin.nodeExists(OboService.CONSENTS));
+    }
+
+    @Test
+    void thePreviousScriptFailedWhenVarGradialWasAFolder() throws Exception {
+        admin.getNode("/var").addNode("gradial", "nt:folder");
+        admin.save();
+        assertThrows(Exception.class, () -> apply("create path (oak:Unstructured) /var/gradial/obo/grants"),
+                "regression guard: oak:Unstructured cannot be a child of nt:folder");
+        admin.refresh(false);
+        setUp();
+    }
+
+    @Test
+    void everyoneIsLockedOutButAdministratorsAndTheServiceUserAreNot() throws Exception {
+        UserManager users = ((JackrabbitSession) admin).getUserManager();
+        users.createUser("zz-author", "zz-author-password");
+        users.createUser("zz-admin", "zz-admin-password");
+        ((Group) users.getAuthorizable("administrators")).addMember(users.getAuthorizable("zz-admin"));
+        admin.save();
+        everyoneMayReadVar();
+        setUp();
+        storeAcceptsRecords();
+
+        Session author = repository.login(new SimpleCredentials("zz-author", "zz-author-password".toCharArray()));
+        try {
+            assertFalse(author.nodeExists(OboService.STORE));
+            assertFalse(author.nodeExists(OboService.ROOT + "/ab/0123456789abcdef/record"));
+        } finally { author.logout(); }
+
+        Session administrator = repository.login(new SimpleCredentials("zz-admin", "zz-admin-password".toCharArray()));
+        try {
+            assertTrue(administrator.nodeExists(OboService.ROOT + "/ab/0123456789abcdef/record"));
+            administrator.getNode(OboService.ROOT + "/ab").remove();
+            administrator.save();
+        } finally { administrator.logout(); }
+
+        Session service = admin.impersonate(new SimpleCredentials("gradial-obo-state", new char[0]));
+        try {
+            Node consent = service.getNode(OboService.CONSENTS + "/ab/0123456789abcdef/record");
+            consent.setProperty("expires", 1L);
+            service.save();
+        } finally { service.logout(); }
+    }
+
+    /** The baseline for the denial above: the same ordinary user reads the same records once the deny entry is gone. */
+    @Test
+    void theDenyEntryIsTheOnlyThingKeepingOrdinaryUsersOutOfTheStore() throws Exception {
+        ((JackrabbitSession) admin).getUserManager().createUser("zz-author", "zz-author-password");
+        admin.save();
+        everyoneMayReadVar();
+        setUp();
+        storeAcceptsRecords();
+        String record = OboService.ROOT + "/ab/0123456789abcdef/record";
+        assertFalse(canRead("zz-author", "zz-author-password", record), "denied while the deny entry is in place");
+
+        javax.jcr.security.AccessControlManager acm = admin.getAccessControlManager();
+        int removed = 0;
+        for (javax.jcr.security.AccessControlPolicy policy : acm.getPolicies(OboService.STORE)) {
+            if (!(policy instanceof org.apache.jackrabbit.api.security.JackrabbitAccessControlList)) continue;
+            org.apache.jackrabbit.api.security.JackrabbitAccessControlList acl = (org.apache.jackrabbit.api.security.JackrabbitAccessControlList) policy;
+            for (javax.jcr.security.AccessControlEntry entry : acl.getAccessControlEntries()) {
+                if (entry.getPrincipal().equals(org.apache.jackrabbit.oak.spi.security.principal.EveryonePrincipal.getInstance())
+                        && !((org.apache.jackrabbit.api.security.JackrabbitAccessControlEntry) entry).isAllow()) {
+                    acl.removeAccessControlEntry(entry);
+                    removed++;
+                }
+            }
+            acm.setPolicy(OboService.STORE, acl);
+        }
+        admin.save();
+        assertEquals(1, removed, "exactly one everyone deny entry guards the store");
+        assertTrue(canRead("zz-author", "zz-author-password", record), "readable without the deny entry, so the denial is real");
+    }
+
+    /** AEM lets everyone read /var; an empty Oak repository does not, so without this a denial proves nothing. */
+    private void everyoneMayReadVar() throws Exception {
+        javax.jcr.security.AccessControlManager acm = admin.getAccessControlManager();
+        org.apache.jackrabbit.api.security.JackrabbitAccessControlList acl =
+                org.apache.jackrabbit.commons.jackrabbit.authorization.AccessControlUtils.getAccessControlList(admin, "/var");
+        acl.addEntry(org.apache.jackrabbit.oak.spi.security.principal.EveryonePrincipal.getInstance(),
+                new javax.jcr.security.Privilege[] {acm.privilegeFromName(javax.jcr.security.Privilege.JCR_READ)}, true);
+        acm.setPolicy("/var", acl);
+        admin.save();
+    }
+
+    private boolean canRead(String id, String password, String path) throws Exception {
+        Session session = repository.login(new SimpleCredentials(id, password.toCharArray()));
+        try { return session.nodeExists(path); } finally { session.logout(); }
+    }
+
+    @Test
+    void theServiceUserSeesAdministratorsMembershipHeldInOverflowMemberLists() throws Exception {
+        UserManager users = ((JackrabbitSession) admin).getUserManager();
+        Group administrators = (Group) users.getAuthorizable("administrators");
+        // Oak moves members past the first 100 into rep:membersList child nodes.
+        for (int i = 0; i < 150; i++) administrators.addMember(users.createUser("zz-member-" + i, "password-" + i));
+        admin.save();
+        assertTrue(admin.nodeExists(administrators.getPath() + "/rep:membersList"), "fixture must use the overflow list");
+        setUp();
+
+        String passwordHash = admin.getNode(users.getAuthorizable("zz-member-149").getPath()).getProperty("rep:password").getString();
+        assertFalse(passwordHash.isEmpty(), "baseline: the account has a password hash that an administrator reads");
+        Session service = admin.impersonate(new SimpleCredentials("gradial-obo-state", new char[0]));
+        try {
+            User overflow = (User) ((JackrabbitSession) service).getUserManager().getAuthorizable("zz-member-149");
+            boolean member = false;
+            for (Iterator<Group> groups = overflow.memberOf(); groups.hasNext();) {
+                member |= "administrators".equals(groups.next().getID());
+            }
+            assertTrue(member, "the consent-time administrator check must see overflow members");
+            assertTrue(service.propertyExists(overflow.getPath() + "/rep:principalName"), "the same account's other properties are readable");
+            assertFalse(service.propertyExists(overflow.getPath() + "/rep:password"), "password hashes stay unreadable");
+        } finally { service.logout(); }
+    }
+    private OboRepositoryInitializer initializer() throws Exception {
+        return new OboRepositoryInitializer();
+    }
+
+    private org.apache.sling.jcr.api.SlingRepository sling() throws Exception {
+        org.apache.sling.jcr.api.SlingRepository sling = org.mockito.Mockito.mock(org.apache.sling.jcr.api.SlingRepository.class);
+        org.mockito.Mockito.when(sling.loginAdministrative(null))
+                .thenAnswer(call -> repository.login(new SimpleCredentials("admin", "admin".toCharArray())));
+        return sling;
+    }
+
+    @Test
+    void theInitializerSetsUpTheStoreAndAppliesTwice() throws Exception {
+        assertTrue(initializer().apply(sling()));
+        assertTrue(initializer().apply(sling()));
+        admin.refresh(false);
+        assertTrue(admin.nodeExists(OboService.ROOT));
+        assertTrue(((User) ((JackrabbitSession) admin).getUserManager().getAuthorizable(OboRepositoryInitializer.SERVICE_USER)).isSystemUser());
+    }
+
+    @Test
+    void aNormalUserWithTheServiceUserIdIsLeftUntouchedAndNothingIsApplied() throws Exception {
+        UserManager users = ((JackrabbitSession) admin).getUserManager();
+        users.createUser(OboRepositoryInitializer.SERVICE_USER, "customer-password");
+        admin.save();
+        String path = users.getAuthorizable(OboRepositoryInitializer.SERVICE_USER).getPath();
+        assertFalse(initializer().apply(sling()));
+        assertDoesNotThrow(() -> initializer().processRepository(sling()));
+        admin.refresh(false);
+        User account = (User) users.getAuthorizable(OboRepositoryInitializer.SERVICE_USER);
+        assertFalse(account.isSystemUser(), "the customer's account is not converted");
+        assertEquals(path, account.getPath(), "nor moved or recreated");
+        assertFalse(admin.nodeExists(OboService.STORE), "nothing was set up");
+        repository.login(new SimpleCredentials(OboRepositoryInitializer.SERVICE_USER, "customer-password".toCharArray())).logout();
+    }
+
+    @Test
+    void aGroupWithTheServiceUserIdIsLeftUntouchedAndNothingIsApplied() throws Exception {
+        ((JackrabbitSession) admin).getUserManager().createGroup(OboRepositoryInitializer.SERVICE_USER);
+        admin.save();
+        assertFalse(initializer().apply(sling()));
+        assertDoesNotThrow(() -> initializer().processRepository(sling()));
+        admin.refresh(false);
+        assertTrue(((JackrabbitSession) admin).getUserManager().getAuthorizable(OboRepositoryInitializer.SERVICE_USER).isGroup());
+        assertFalse(admin.nodeExists(OboService.STORE));
+    }
+
+    @Test
+    void aFailingRepositoryNeverMakesTheInitializerThrow() throws Exception {
+        org.apache.sling.jcr.api.SlingRepository broken = org.mockito.Mockito.mock(org.apache.sling.jcr.api.SlingRepository.class);
+        org.mockito.Mockito.when(broken.loginAdministrative(null)).thenThrow(new javax.jcr.RepositoryException("unavailable"));
+        assertDoesNotThrow(() -> initializer().processRepository(broken));
+    }
+}

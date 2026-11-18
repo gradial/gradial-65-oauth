@@ -1,0 +1,159 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+ |  Copyright 2017 Adobe Systems Incorporated
+ |
+ |  Licensed under the Apache License, Version 2.0 (the "License");
+ |  you may not use this file except in compliance with the License.
+ |  You may obtain a copy of the License at
+ |
+ |      http://www.apache.org/licenses/LICENSE-2.0
+ |
+ |  Unless required by applicable law or agreed to in writing, software
+ |  distributed under the License is distributed on an "AS IS" BASIS,
+ |  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ |  See the License for the specific language governing permissions and
+ |  limitations under the License.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>io.github.gradial</groupId>
+        <artifactId>gradial-oauth</artifactId>
+        <version>1.2.2-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+    <artifactId>gradial.obo</artifactId>
+    <name>Gradial - OBO</name>
+    <description>Optional user-scoped delegation bundle for Gradial OAuth</description>
+    <properties>
+        <!-- Repository stack the Oak-backed tests run on: AEM 6.5 SP25 by default (Java 8/11). -->
+        <test.oak.version>1.22.24</test.oak.version>
+        <test.repoinit.version>1.1.38</test.repoinit.version>
+        <test.repoinit.parser.version>1.6.14</test.repoinit.parser.version>
+        <test.guava.version>15.0</test.guava.version>
+    </properties>
+    <profiles>
+        <profile>
+            <!-- Oak 1.22 needs java.security.acl, removed in Java 14, so AEM 6.5 cannot run there either.
+                 On newer JDKs the same tests run on the AEM 6.5 LTS stack (aem-lts runs exactly these versions). -->
+            <id>aem-lts-test-stack</id>
+            <activation><jdk>[14,)</jdk></activation>
+            <properties>
+                <test.oak.version>1.88.0</test.oak.version>
+                <test.repoinit.version>1.1.54</test.repoinit.version>
+                <test.repoinit.parser.version>1.9.2</test.repoinit.parser.version>
+                <test.guava.version>33.4.8-jre</test.guava.version>
+            </properties>
+        </profile>
+    </profiles>
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.sling</groupId>
+                <artifactId>sling-maven-plugin</artifactId>
+            </plugin>
+            <plugin>
+                <groupId>biz.aQute.bnd</groupId>
+                <artifactId>bnd-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>bnd-process</id>
+                        <goals>
+                            <goal>bnd-process</goal>
+                        </goals>
+                        <configuration>
+                            <bnd><![CDATA[
+Import-Package: javax.annotation;version=0.0.0,\
+  *
+                                ]]></bnd>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>biz.aQute.bnd</groupId>
+                <artifactId>bnd-baseline-maven-plugin</artifactId>
+                <configuration>
+                    <failOnMissing>false</failOnMissing>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>baseline</id>
+                        <goals>
+                            <goal>baseline</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <!-- AEM 6.5 runs on Java 8 and 11 and AEM 6.5 LTS on 17 and 21: Java 8 bytecode resolves on all of them. -->
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.11.0</version>
+                <configuration>
+                    <release>8</release>
+                    <testRelease>11</testRelease>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <configuration>
+                    <archive>
+                        <manifestFile>${project.build.outputDirectory}/META-INF/MANIFEST.MF</manifestFile>
+                    </archive>
+                </configuration>
+            </plugin>
+            <plugin>
+                <!-- The Oak bundles each supported AEM line runs, copied (not on any classpath) for
+                     ImportPackageResolutionTest: AEM 6.5 SP25 runs Oak 1.22.24, AEM 6.5 LTS runs Oak 1.88.0. -->
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <version>3.6.1</version>
+                <executions>
+                    <execution>
+                        <id>platform-oak-bundles</id>
+                        <phase>generate-test-resources</phase>
+                        <goals><goal>copy</goal></goals>
+                        <configuration>
+                            <artifactItems>
+                                <artifactItem><groupId>org.apache.jackrabbit</groupId><artifactId>oak-api</artifactId><version>1.22.24</version><outputDirectory>${project.build.directory}/platforms/aem65-sp25</outputDirectory></artifactItem>
+                                <artifactItem><groupId>org.apache.jackrabbit</groupId><artifactId>oak-core-spi</artifactId><version>1.22.24</version><outputDirectory>${project.build.directory}/platforms/aem65-sp25</outputDirectory></artifactItem>
+                                <artifactItem><groupId>org.apache.jackrabbit</groupId><artifactId>oak-security-spi</artifactId><version>1.22.24</version><outputDirectory>${project.build.directory}/platforms/aem65-sp25</outputDirectory></artifactItem>
+                                <artifactItem><groupId>org.apache.jackrabbit</groupId><artifactId>oak-api</artifactId><version>1.88.0</version><outputDirectory>${project.build.directory}/platforms/aem65-lts</outputDirectory></artifactItem>
+                                <artifactItem><groupId>org.apache.jackrabbit</groupId><artifactId>oak-core-spi</artifactId><version>1.88.0</version><outputDirectory>${project.build.directory}/platforms/aem65-lts</outputDirectory></artifactItem>
+                                <artifactItem><groupId>org.apache.jackrabbit</groupId><artifactId>oak-security-spi</artifactId><version>1.88.0</version><outputDirectory>${project.build.directory}/platforms/aem65-lts</outputDirectory></artifactItem>
+                            </artifactItems>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+
+    <dependencies>
+        <!-- Oak 1.22 (AEM 6.5) needs Guava 15; pin it before anything that pulls a newer one. -->
+        <dependency><groupId>com.google.guava</groupId><artifactId>guava</artifactId><version>${test.guava.version}</version><scope>test</scope></dependency>
+        <!-- First, so its SLF4J binding wins over the one uber-jar bundles and tests can assert audit lines. -->
+        <dependency><groupId>uk.org.lidalia</groupId><artifactId>slf4j-test</artifactId><scope>test</scope></dependency>
+        <!-- Real Oak plus Sling repoinit at the versions AEM 6.5 SP25 runs, declared first so they win over uber-jar on
+             the test classpath. Used only to execute the shipped repoinit script against pre-existing repository states. -->
+        <dependency><groupId>org.apache.jackrabbit</groupId><artifactId>oak-jcr</artifactId><version>${test.oak.version}</version><scope>test</scope></dependency>
+        <dependency><groupId>org.apache.sling</groupId><artifactId>org.apache.sling.jcr.repoinit</artifactId><version>${test.repoinit.version}</version><scope>test</scope></dependency>
+        <dependency><groupId>org.apache.sling</groupId><artifactId>org.apache.sling.repoinit.parser</artifactId><version>${test.repoinit.parser.version}</version><scope>test</scope></dependency>
+        <dependency><groupId>org.osgi</groupId><artifactId>org.osgi.service.metatype.annotations</artifactId></dependency>
+        <dependency><groupId>org.osgi</groupId><artifactId>org.osgi.service.component.annotations</artifactId></dependency>
+        <dependency><groupId>org.slf4j</groupId><artifactId>slf4j-api</artifactId></dependency>
+        <dependency><groupId>javax.jcr</groupId><artifactId>jcr</artifactId></dependency>
+        <dependency><groupId>javax.servlet</groupId><artifactId>javax.servlet-api</artifactId></dependency>
+        <dependency><groupId>com.adobe.aem</groupId><artifactId>uber-jar</artifactId></dependency>
+        <dependency><groupId>org.apache.felix</groupId><artifactId>org.apache.felix.framework</artifactId><version>7.0.5</version><scope>test</scope></dependency>
+        <dependency><groupId>org.junit.jupiter</groupId><artifactId>junit-jupiter</artifactId><scope>test</scope></dependency>
+        <dependency><groupId>org.mockito</groupId><artifactId>mockito-core</artifactId><scope>test</scope></dependency>
+        <dependency><groupId>io.wcm</groupId><artifactId>io.wcm.testing.aem-mock.junit5</artifactId><scope>test</scope></dependency>
+    </dependencies>
+</project>

@@ -1,0 +1,15 @@
+create service user gradial-obo-state with path system/gradial
+create path (sling:Folder) /var/gradial/obo/grants
+create path (sling:Folder) /var/gradial/obo/consents
+set ACL for everyone
+  deny jcr:read,rep:write on /var/gradial/obo
+end
+set ACL for administrators
+  allow jcr:read,rep:write on /var/gradial/obo
+end
+set ACL for gradial-obo-state
+  allow jcr:read,rep:write on /var/gradial/obo
+  allow jcr:read on /home/users restriction(rep:ntNames,rep:AuthorizableFolder,rep:User)
+  deny jcr:read on /home/users restriction(rep:itemNames,rep:password)
+  allow jcr:read on /home/groups restriction(rep:ntNames,rep:AuthorizableFolder,rep:Group,rep:MemberReferencesList,rep:MemberReferences)
+end

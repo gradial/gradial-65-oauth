@@ -74,6 +74,11 @@
                         </embedded>
                         <embedded>
                             <groupId>io.github.gradial</groupId>
+                            <artifactId>gradial.obo</artifactId>
+                            <target>/apps/gradial-packages/obo/install.author</target>
+                        </embedded>
+                        <embedded>
+                            <groupId>io.github.gradial</groupId>
                             <artifactId>gradial.ui.config</artifactId>
                             <type>zip</type>
                             <target>/apps/gradial-packages/application/install</target>
@@ -178,6 +183,11 @@
             <artifactId>gradial.ui.config</artifactId>
             <version>${project.version}</version>
             <type>zip</type>
+        </dependency>
+        <dependency>
+            <groupId>io.github.gradial</groupId>
+            <artifactId>gradial.obo</artifactId>
+            <version>${project.version}</version>
         </dependency>
     </dependencies>
 </project>
