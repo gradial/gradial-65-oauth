@@ -29,7 +29,7 @@ In your project's `all/pom.xml`, add the Gradial OAuth package as a dependency:
     <dependency>
         <groupId>io.github.gradial</groupId>
         <artifactId>gradial.all</artifactId>
-        <version>1.1.0</version>
+        <version>1.3.0</version>
         <type>zip</type>
     </dependency>
 </dependencies>
@@ -88,7 +88,7 @@ Download the latest release from GitHub:
 3. Upload artifact:
    - **GroupId**: `io.github.gradial`
    - **ArtifactId**: `gradial.all`
-   - **Version**: `1.1.0`
+   - **Version**: `1.3.0`
    - **Packaging**: `zip`
    - **File**: Upload the downloaded ZIP
 
@@ -97,9 +97,9 @@ Download the latest release from GitHub:
 mvn deploy:deploy-file \
   -DgroupId=io.github.gradial \
   -DartifactId=gradial.all \
-  -Dversion=1.1.0 \
+  -Dversion=1.3.0 \
   -Dpackaging=zip \
-  -Dfile=gradial.all-1.1.0.zip \
+  -Dfile=gradial.all-1.3.0.zip \
   -DrepositoryId=your-nexus-releases \
   -Durl=https://nexus.yourcompany.com/repository/releases/
 ```

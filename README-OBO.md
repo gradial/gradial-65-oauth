@@ -24,7 +24,7 @@ The legacy `gradial.core` bundle (DynamicScope) is unchanged and is compiled for
 
 ## Enable on Author
 
-Deploy the separate `io.github.gradial:gradial.obo` bundle and its two foundation configurations through the customer's existing AEM deployment pipeline, on Author only. The current candidate is `1.2.2-SNAPSHOT`; customer rollout requires the matching reviewed, published immutable artifact. There is no need to replace the legacy OAuth bundle or change its scope configuration. No delegation services are enabled until an explicit customer configuration is supplied.
+Deploy the separate `io.github.gradial:gradial.obo` bundle and its two foundation configurations through the customer's existing AEM deployment pipeline, on Author only. The current candidate is `1.3.0`; customer rollout requires the matching reviewed, published immutable artifact. There is no need to replace the legacy OAuth bundle or change its scope configuration. No delegation services are enabled until an explicit customer configuration is supplied.
 
 Add `com.gradial.core.oauth.obo.OboService.cfg.json` to your own project's `config.author` (not under `/apps/gradial`):
 
@@ -132,7 +132,7 @@ Cloud runtime and IMS entitlement revocation have not yet been verified for this
 
 For the package-based candidate, an AEM developer must:
 
-1. Include the separate OBO-capable `io.github.gradial:gradial.obo` bundle in the existing project's Author install location. The current candidate is `1.2.2-SNAPSHOT`, not a verified published Cloud release.
+1. Include the separate OBO-capable `io.github.gradial:gradial.obo` bundle in the existing project's Author install location. The current candidate is `1.3.0`, not a verified published Cloud release.
 2. Put the supplied `org.apache.sling.serviceusermapping.impl.ServiceUserMapperImpl.amended~gradial-obo.cfg.json` and `com.gradial.core.oauth.obo.OboRepositoryInitializer.cfg.json` (it enables the repository initializer, which has `configurationPolicy = REQUIRE`) under that project's `config.author`. Keep the filters limited to those configurations and the bundle; do not replace unrelated `/apps/gradial` code.
 3. Add the `OboService` configuration above with a dedicated client, trusted Author origin and exact callback. This client belongs to this package; it is not an Adobe Developer Console OAuth Web App registration.
 4. Commit and deploy through the customer's existing Cloud Manager code pipeline. [Cloud Package Manager](https://experienceleague.adobe.com/en/docs/experience-manager-cloud-service/content/implementing/developer-tools/package-manager) cannot deploy this Java code.
