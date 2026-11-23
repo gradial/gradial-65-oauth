@@ -18,13 +18,13 @@ It is built from the platform's own extension points: a Sling `AuthenticationHan
 | AEM 6.5 LTS | Yes | Tested on 6.5 LTS (Oak 1.88), also with AEM Guides 5.2.1 installed. |
 | Java | 8, 11, 17, 21 | Compiled as Java 8 bytecode (`osgi.ee` JavaSE 1.8; all classes major version 52), so it resolves on every Java that AEM 6.5 and 6.5 LTS run on. Runtime-tested on 11, 17 and 21; Java 8 at runtime is not tested. |
 | Run mode | Author only | The bundle installs from `install.author`, and its configurations live in `config.author`. Nothing from this extension installs on Publish. |
-| AEM as a Cloud Service | Not verified | Not run on a Cloud environment. The local AEM SDK 2026.10.29251 (Java 21) passes the same install checks and the delegation flow; see below for what a Cloud rollout still needs. |
+| AEM as a Cloud Service | Supported | Deployed through Cloud Manager and running on Gradial's own AEM as a Cloud Service development environment (program 124002): the bundle is active, `OboService` is enabled from a Cloud Manager variable, the repository initializer created `gradial-obo-state`, and the three endpoints answer. The local AEM SDK 2026.10.29251 (Java 21) passes the same install checks and the full delegation flow. See [AEM as a Cloud Service deployment](#aem-as-a-cloud-service-deployment). |
 
 The legacy `gradial.core` bundle (DynamicScope) is unchanged and is compiled for Java 11, as in released 1.2.0.
 
 ## Enable on Author
 
-Deploy the separate `io.github.gradial:gradial.obo` bundle and its two foundation configurations through the customer's existing AEM deployment pipeline, on Author only. The current candidate is `1.3.0`; customer rollout requires the matching reviewed, published immutable artifact. There is no need to replace the legacy OAuth bundle or change its scope configuration. No delegation services are enabled until an explicit customer configuration is supplied.
+Deploy the separate `io.github.gradial:gradial.obo` bundle and its two foundation configurations through the customer's existing AEM deployment pipeline, on Author only. The current release is `1.3.0`, published as GitHub release assets and on Maven Central (see [Release artifacts](#release-artifacts)). There is no need to replace the legacy OAuth bundle or change its scope configuration. No delegation services are enabled until an explicit customer configuration is supplied.
 
 Add `com.gradial.core.oauth.obo.OboService.cfg.json` to your own project's `config.author` (not under `/apps/gradial`):
 
@@ -128,18 +128,27 @@ No other Gradial request uses these paths.
 
 ## AEM as a Cloud Service deployment
 
-Cloud runtime and IMS entitlement revocation have not yet been verified for this extension. Adobe's [Author authentication matrix](https://experienceleague.adobe.com/en/docs/experience-manager-learn/cloud-service/authentication/authentication) does not list OAuth as a supported Author option. A successful custom-module test would establish runtime behavior, but would not by itself establish Adobe support. Resolve these questions before customer rollout.
+Supported, and tested on Gradial's own AEM as a Cloud Service development environment (program 124002), deployed as below. There, the bundle is active, `OboService` is enabled from a Cloud Manager variable, the `gradial-obo-state` system user exists under `/home/users/system/gradial` (with a generated node name), `/bin/gradial/obo/authorize` answers `401` signed out and its own `invalid_request` signed in, and `/token` and `/revoke` answer `405` to GET. Adobe's [Author authentication matrix](https://experienceleague.adobe.com/en/docs/experience-manager-learn/cloud-service/authentication/authentication) does not list this kind of extension, so this is Gradial's support, not Adobe's.
 
-For the package-based candidate, an AEM developer must:
+Do not install `gradial.all` on Cloud: [Cloud Package Manager](https://experienceleague.adobe.com/en/docs/experience-manager-cloud-service/content/implementing/developer-tools/package-manager) cannot deploy Java code. Instead, in the customer's own project:
 
-1. Include the separate OBO-capable `io.github.gradial:gradial.obo` bundle in the existing project's Author install location. The current candidate is `1.3.0`, not a verified published Cloud release.
-2. Put the supplied `org.apache.sling.serviceusermapping.impl.ServiceUserMapperImpl.amended~gradial-obo.cfg.json` and `com.gradial.core.oauth.obo.OboRepositoryInitializer.cfg.json` (it enables the repository initializer, which has `configurationPolicy = REQUIRE`) under that project's `config.author`. Keep the filters limited to those configurations and the bundle; do not replace unrelated `/apps/gradial` code.
-3. Add the `OboService` configuration above with a dedicated client, trusted Author origin and exact callback. This client belongs to this package; it is not an Adobe Developer Console OAuth Web App registration.
-4. Commit and deploy through the customer's existing Cloud Manager code pipeline. [Cloud Package Manager](https://experienceleague.adobe.com/en/docs/experience-manager-cloud-service/content/implementing/developer-tools/package-manager) cannot deploy this Java code.
-5. Verify the bundle and foundation services, then test with an IMS-backed non-admin user whose normal Author product profile and content permissions are already configured.
-6. Once the matching Gradial release is available, enable **Per-user AEM sign-in** on the existing regular AEM integration.
+1. In the `all` container's `pom.xml`, add the dependency `io.github.gradial:gradial.obo:1.3.0` and embed it with the `filevault-package-maven-plugin` at `/apps/<project>-packages/application/install.author`.
+2. In `ui.config`, add `org.apache.sling.serviceusermapping.impl.ServiceUserMapperImpl.amended~gradial-obo.cfg.json` (`"user.mapping": ["gradial.obo:obo=[gradial-obo-state]"]`) and an empty `com.gradial.core.oauth.obo.OboRepositoryInitializer.cfg.json` (`{}`; it enables the repository initializer, which has `configurationPolicy = REQUIRE`) under `/apps/<project>/osgiconfig/config.author`. On Cloud these are the only copies, so the duplicate-PID warning above does not apply.
+3. Add the `OboService` configuration above, using Cloud Manager variables for per-environment values, for example `"enabled": "$[env:GRADIAL_OBO_ENABLED;type=Boolean;default=false]"` and `"clientSecretSha256": "$[secret:GRADIAL_OBO_CLIENT_SECRET_SHA256;default=]"`, with one copy per run mode folder (`config.author.dev`, `config.author.stage`, `config.author.prod`) for each environment's `publicOrigin`. Set the variables on the Author service, the hash as a secret.
+4. Commit and deploy through the customer's Cloud Manager code pipeline.
+5. Verify as above, then test with an IMS-backed non-admin user (for example from the AEM Users product profile) whose Author permissions are already configured. Members of `administrators` are refused unless `allowAdministrators` is set.
+6. In Gradial, enable **Per-user AEM sign-in** on the existing AEM integration.
 
 For development only, an [RDE](https://experienceleague.adobe.com/en/docs/experience-manager-cloud-service/content/implementing/developing/rapid-development-environments) accepts direct bundle and OSGi configuration installation. RDE success must be followed by validation in a normal Cloud development environment.
+
+## Release artifacts
+
+`1.3.0` is published in two places:
+
+- GitHub release [`1.3.0`](https://github.com/gradial/gradial-65-oauth/releases/tag/1.3.0): `gradial.all-1.3.0.zip` (install this in Package Manager on AEM 6.5 and LTS), plus `gradial.core`, `gradial.obo`, `gradial.ui.apps` and `gradial.ui.config`.
+- Maven Central, group `io.github.gradial`: `gradial.all:1.3.0` (zip), `gradial.obo:1.3.0`, `gradial.core:1.3.0`, `gradial.ui.apps:1.3.0`, `gradial.ui.config:1.3.0` and the `gradial-oauth` parent.
+
+The two are equivalent builds of the same tag. The GitHub assets were built with JDK 11 and the Maven Central artifacts with JDK 17, so their checksums differ. Their content-package filters, OSGi configurations, component and metatype descriptors, bundle manifests (apart from `Build-Jdk-Spec`) and class string constants are identical. Class files differ only by compiler-generated helpers (switch maps, enum `$values`), and the bytecode level is the same in both (Java 8 for `gradial.obo`, Java 11 for `gradial.core`).
 
 ## Connect
 
